@@ -55,3 +55,48 @@ def test_too_few_segments_is_marked_degraded(call_003):
     result = assign_speakers(y, [Segment(0.0, 1.0)])
     assert result.degraded is True
     assert set(result.assignments.values()) == {"customer"}
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "KNOWN DEFECT, not yet fixed. Speaker-embedding clustering cannot "
+        "isolate the customer on a code-switched call. Measured: 12.36s "
+        "attributed to the customer against a true ~0.9s. Proven unfixable "
+        "within cluster-level labelling: the customer's single 0.9s segment "
+        "never forms its own cluster at k in (2,3) - it groups with genuine "
+        "agent segments - so the arithmetic floor for customer_speech_seconds "
+        "is 5.2s regardless of the reference vector used. No cluster clears "
+        "AGENT_REF_MIN_SIM (best 0.4427), and at k=3 the mixed cluster (0.4427) "
+        "outranks the pure-agent one (0.4094), so reference similarity is not "
+        "even ordering correctly. The principled fix needs per-segment "
+        "classification informed by ASR language ID (Task 6), which does not "
+        "exist yet. Left xfail(strict) so it flips to XPASS the moment it is "
+        "genuinely fixed."
+    ),
+)
+def test_code_switched_call_does_not_inflate_customer_speech():
+    """call_002: bot greets in English, customer says 'Spanish, please'
+    (~1s), then the BOT continues in Spanish. ECAPA embeddings are
+    language-sensitive, so naive 2-way clustering splits the bot's own two
+    languages and mislabels ~11s of bot speech as customer. True customer
+    speech is ~1s, which must land in Tier C (<3s)."""
+    y, _ = load_mono(reference_call("call_002.ogg"))
+    result = assign_speakers(y, speech_segments(y))
+    assert result.customer_speech_seconds < 3.0, (
+        f"expected ~1s of customer speech, got "
+        f"{result.customer_speech_seconds:.1f}s - bot speech is being "
+        f"attributed to the customer"
+    )
+
+
+def test_customer_share_is_plausible_on_every_provided_call():
+    """The bot is a receptionist: it should never be a small minority of the
+    call. A customer share above 85% means roles are likely swapped."""
+    for name in ("call_001.ogg", "call_002.ogg", "call_003.ogg"):
+        y, _ = load_mono(reference_call(name))
+        segments = speech_segments(y)
+        result = assign_speakers(y, segments)
+        total = sum(s.duration for s in segments)
+        share = result.customer_speech_seconds / total
+        assert share < 0.85, f"{name}: customer share {share:.0%} - roles swapped?"

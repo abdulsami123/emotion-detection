@@ -1002,6 +1002,32 @@ Stated in the memo, not discovered by the grader:
 5. **ASR errors propagate**, and noisy calls are disproportionately the emotional ones. Mitigated
    by feeding `avg_logprob` into confidence, not by pretending it doesn't happen.
 6. **The bot-outcome→emotion hypothesis** (§2.4) holds 3/3 and is otherwise unvalidated.
+6b. **CONFIRMED DEFECT — code-switching breaks speaker assignment.** Not a risk; measured.
+   On call_002 the bot greets in English, the customer says two words, and the bot then
+   continues in Spanish. ECAPA embeddings are language-sensitive, so clustering separates the
+   bot's **English voice from its own Spanish voice** rather than bot from human:
+   **12.36s attributed to the customer against a true ~0.9s.** The `degraded` flag does not
+   fire, because the two clusters *are* well separated — along the wrong axis.
+
+   Consequence: call_002 should be **Tier C** (<3s → emit `medium`, cap confidence), which is
+   how it reaches its correct `neutral / medium` label. Instead it takes Tier B and reasons
+   over ~11s of bot audio it believes is the customer.
+
+   Proven unfixable at the cluster level: the customer's single 0.9s segment never forms its
+   own cluster at k ∈ (2,3), so the floor for `customer_speech_seconds` is 5.2s whatever
+   reference vector is used. No cluster clears `AGENT_REF_MIN_SIM` (best 0.4427), and at k=3
+   the mixed cluster outranks the pure-agent one — the similarity metric is not ordering
+   correctly, not merely mis-thresholded.
+
+   **Planned fix:** per-segment classification informed by ASR language ID (§4.4), so segments
+   in different languages can still map to one speaker. Deferred until ASR exists.
+   Tracked by `test_code_switched_call_does_not_inflate_customer_speech`, marked
+   `xfail(strict=True)` so it flips to XPASS the moment it genuinely passes.
+
+   **Also observed:** on call_001 a reference similarity of 0.5529 sits 0.003 above the 0.55
+   threshold, so speaker assignment there is decided by noise. `AGENT_REF_MIN_SIM` needs
+   re-deriving once a working method exists.
+
 7. **Multilingual prosody.** eGeMAPS baselines and especially speech-rate features are
    language-sensitive. Z-scoring each caller against themselves absorbs much of this, but the
    SER model and the LLM's interpretation of prosody tags are both English-centric, and
