@@ -31,7 +31,10 @@ def test_no_loudness_normalization_is_applied():
         float(np.sqrt(np.mean(load_mono(reference_call(n))[0] ** 2)))
         for n in ("call_001.ogg", "call_002.ogg", "call_003.ogg")
     ]
-    assert max(levels) / min(levels) > 1.5, (
+    # Measured true ratio is 2.653. Peak normalization collapses it to 1.616
+    # and RMS normalization to 1.000, so the threshold must sit above 1.616
+    # to catch either. 2.0 leaves headroom on both sides.
+    assert max(levels) / min(levels) > 2.0, (
         "levels are suspiciously uniform - has normalization crept in?"
     )
 
