@@ -1,3 +1,17 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# ---------------------------------------------------------------------------
+# Confidential trial assets. NEVER commit these.
+# The trial brief section 5 requires production-call audio be treated as
+# confidential and not uploaded to public services. The target GitHub repo is
+# public. Place the provided files in reference/ locally to run the tests:
+#   reference/call_001.ogg, call_002.ogg, call_003.ogg, labels.csv
+# ---------------------------------------------------------------------------
+reference/
+aa/
+
+# local model cache and batch scratch
+models/
+_batches/
