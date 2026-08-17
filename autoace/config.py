@@ -22,6 +22,10 @@ LLM_TEMPERATURE = 0.0
 
 SAMPLE_RATE = 16000
 
+# ------------------------------------------------------------------- SER
+SER_WINDOW_S = 6.0                     # DERIVED — long enough for stable arousal/valence
+SER_MAX_WINDOWS = 4                    # DERIVED — caps cost at O(1) per call
+
 # ------------------------------------------------------------------ VAD
 VAD_THRESHOLD = 0.5                    # DERIVED — Silero default
 VAD_MIN_SPEECH_MS = 250                # DERIVED
