@@ -133,6 +133,16 @@ CONF_NEAR_THRESHOLD = -0.05
 CONF_TIER_C = -0.20
 CONF_DEGRADED = -0.15
 CONF_ASR_POOR = -0.10
+# MEASURED 2026-08-17: distinct from "the two tone voters disagreed". A missing
+# voter is not the same as two conflicting ones, and tone_voters_agree=False
+# only WITHHOLDS a bonus - it applies no penalty. On call_001 with the Haiku key
+# invalid, the NLI-only path produced `distressed/low` (truth: `upset/high`) at
+# confidence 0.75, i.e. above REVIEW_THRESHOLD, so a wrong answer from a
+# degraded path would not have been queued for review. Penalised and hard-capped
+# below the review threshold so the primary classifier being absent always
+# reaches a human.
+CONF_LLM_UNAVAILABLE = -0.20           # MEASURED
+LLM_UNAVAILABLE_MAX_CONF = 0.55        # MEASURED — sits below REVIEW_THRESHOLD 0.60
 CONF_MIN, CONF_MAX = 0.05, 0.98
 TIER_C_MAX_CONF = 0.45
 DEGRADED_MAX_CONF = 0.50

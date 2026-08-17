@@ -255,6 +255,11 @@ def analyse_file(path: str) -> FileResult:
             tier=tier,
             diarization_degraded=diarization_degraded,
             asr_avg_logprob=asr_avg_logprob,
+            # The primary tone classifier never ran. Distinct from the two
+            # voters disagreeing: this is a MISSING voter, and it hard-caps
+            # confidence below REVIEW_THRESHOLD so the call always reaches a
+            # human rather than shipping as if it were confidently classified.
+            llm_unavailable=(tone_path != "haiku"),
         )
     )
 

@@ -98,3 +98,53 @@ def test_confidence_stays_within_bounds():
         tier=Tier.C, diarization_degraded=True, asr_avg_logprob=-3.0,
     )
     assert 0.05 <= compute_confidence(worst) <= 0.98
+
+
+# ---------------------------------------------------------------------------
+# A MISSING tone voter is not the same as two voters DISAGREEING, and the
+# original formula could not tell them apart: tone_voters_agree=False merely
+# withheld a bonus. Measured on call_001 with the Haiku key invalid, the
+# NLI-only path produced `distressed/low` (truth: `upset/high`) at confidence
+# 0.75 - above REVIEW_THRESHOLD 0.60 - so a wrong answer from a degraded path
+# would never have reached a human.
+# ---------------------------------------------------------------------------
+
+
+def test_missing_llm_voter_is_penalised_beyond_mere_disagreement():
+    """Same inputs, differing only in whether the LLM ran at all."""
+    common = dict(
+        tone_voters_agree=False, intensity_voters_agree=True,
+        ser_consistent=True, llm_self_confidence=0.0,
+        evidence_conflict=False, near_threshold=False,
+        tier=Tier.B, diarization_degraded=False, asr_avg_logprob=-0.2,
+    )
+    disagreed = compute_confidence(ConfidenceInputs(**common, llm_unavailable=False))
+    absent = compute_confidence(ConfidenceInputs(**common, llm_unavailable=True))
+    assert absent < disagreed
+
+
+def test_missing_llm_voter_always_lands_in_the_review_queue():
+    """However well everything else agrees, a result produced without the
+    primary classifier must be flagged for a human."""
+    from autoace.config import REVIEW_THRESHOLD
+
+    best_case = ConfidenceInputs(
+        tone_voters_agree=True, intensity_voters_agree=True,
+        ser_consistent=True, llm_self_confidence=0.99,
+        evidence_conflict=False, near_threshold=False,
+        tier=Tier.A, diarization_degraded=False, asr_avg_logprob=0.0,
+        llm_unavailable=True,
+    )
+    assert compute_confidence(best_case) < REVIEW_THRESHOLD
+
+
+def test_llm_available_is_the_default_and_unpenalised():
+    """Existing call sites that omit the flag must be unaffected."""
+    inputs = ConfidenceInputs(
+        tone_voters_agree=True, intensity_voters_agree=True,
+        ser_consistent=True, llm_self_confidence=0.9,
+        evidence_conflict=False, near_threshold=False,
+        tier=Tier.A, diarization_degraded=False, asr_avg_logprob=0.0,
+    )
+    assert inputs.llm_unavailable is False
+    assert compute_confidence(inputs) > 0.85

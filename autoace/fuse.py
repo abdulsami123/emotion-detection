@@ -18,6 +18,7 @@ from autoace.config import (
     AROUSAL_HIGH_MIN,
     ASR_MIN_LOGPROB,
     CONF_ASR_POOR,
+    CONF_LLM_UNAVAILABLE,
     CONF_BASE,
     CONF_DEGRADED,
     CONF_EVIDENCE_CONFLICT,
@@ -31,6 +32,7 @@ from autoace.config import (
     CONF_TIER_C,
     CONF_TONE_AGREE,
     DEGRADED_MAX_CONF,
+    LLM_UNAVAILABLE_MAX_CONF,
     TIER_C_MAX_CONF,
     VALENCE_NEG_MAX,
     VALENCE_POS_MIN,
@@ -56,6 +58,9 @@ class ConfidenceInputs:
     tier: Tier
     diarization_degraded: bool
     asr_avg_logprob: float
+    # True when the primary (LLM) tone classifier never ran at all - a missing
+    # voter, which is a different situation from two voters disagreeing.
+    llm_unavailable: bool = False
 
 
 def intensity_from_activation(profile: ActivationProfile) -> EmotionalIntensity:
@@ -118,6 +123,7 @@ def compute_confidence(inputs: ConfidenceInputs) -> float:
     score += CONF_TIER_C * (inputs.tier is Tier.C)
     score += CONF_DEGRADED * inputs.diarization_degraded
     score += CONF_ASR_POOR * (inputs.asr_avg_logprob < ASR_MIN_LOGPROB)
+    score += CONF_LLM_UNAVAILABLE * inputs.llm_unavailable
 
     score = max(CONF_MIN, min(CONF_MAX, score))
 
@@ -127,5 +133,9 @@ def compute_confidence(inputs: ConfidenceInputs) -> float:
         score = min(score, TIER_C_MAX_CONF)
     if inputs.diarization_degraded:
         score = min(score, DEGRADED_MAX_CONF)
+    # Hard cap below REVIEW_THRESHOLD: if the primary tone classifier never ran,
+    # the result must always reach a human rather than shipping as confident.
+    if inputs.llm_unavailable:
+        score = min(score, LLM_UNAVAILABLE_MAX_CONF)
 
     return round(score, 3)
