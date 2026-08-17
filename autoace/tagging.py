@@ -57,6 +57,7 @@ from autoace.vad import Segment
 _WINDOW_S = 10.0
 _HOP_S = 5.0
 _MIN_TAGGABLE_S = 2.0
+_MAX_WINDOWS = 6        # caps AST cost at O(1) per call - see tag_audio()
 
 # AudioSet class name -> the brief's short informal vocabulary. The labeller
 # writes "TV", not "television" - keep outputs short and conventional.
@@ -130,9 +131,20 @@ def tag_audio(y: np.ndarray) -> TagResult:
 
     audio = y if len(y) >= window else np.pad(y, (0, window - len(y)))
 
+    # Background-noise type is a CALL-LEVEL property, so it does not need every
+    # window. Measured, one AST forward pass costs ~2.7s on CPU; tagging every
+    # 5s-hopped window cost 30.9s per audio-minute and scaled with call length.
+    # Sampling a fixed number of evenly-spaced windows makes the cost O(1) per
+    # call instead of O(duration) - 16s flat rather than 88s on a 172s call -
+    # while still covering the whole recording.
+    starts = list(range(0, len(audio) - window + 1, hop))
+    if len(starts) > _MAX_WINDOWS:
+        picks = np.linspace(0, len(starts) - 1, _MAX_WINDOWS).round().astype(int)
+        starts = [starts[i] for i in dict.fromkeys(picks)]
+
     logit_sum = None
     count = 0
-    for start in range(0, len(audio) - window + 1, hop):
+    for start in starts:
         inputs = extractor(
             audio[start : start + window],
             sampling_rate=SAMPLE_RATE,

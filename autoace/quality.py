@@ -172,6 +172,7 @@ def _load_squim():
 # fixed windows and the per-window scores averaged, rather than passing the
 # whole signal and silently losing STOI evidence on exactly the longest calls.
 _SQUIM_CHUNK_S = 20.0
+_MAX_SQUIM_CHUNKS = 3   # caps SQUIM cost at O(1) per call - see _estimate_stoi()
 
 
 def _estimate_stoi(y: np.ndarray) -> float | None:
@@ -189,9 +190,22 @@ def _estimate_stoi(y: np.ndarray) -> float | None:
     try:
         model = _load_squim()
         chunk = int(_SQUIM_CHUNK_S * SAMPLE_RATE)
+        starts = list(range(0, len(y), chunk))
+
+        # Audio quality is a CALL-LEVEL property, so it does not need every
+        # chunk. SQUIM's O(n^2) attention costs ~9s per 20s chunk on CPU, so
+        # scoring all of them ran at 28.6s per audio-minute and scaled with
+        # call length. Sampling a fixed number of evenly-spaced chunks makes
+        # the cost O(1) per call - ~27s flat rather than 82s on a 172s call -
+        # while still sampling across the whole recording rather than only its
+        # opening.
+        if len(starts) > _MAX_SQUIM_CHUNKS:
+            picks = np.linspace(0, len(starts) - 1, _MAX_SQUIM_CHUNKS)
+            starts = [starts[i] for i in dict.fromkeys(picks.round().astype(int))]
+
         scores: list[tuple[float, int]] = []
         with torch.no_grad():
-            for start in range(0, len(y), chunk):
+            for start in starts:
                 segment = y[start : start + chunk]
                 if len(segment) < SAMPLE_RATE:  # too short to score meaningfully
                     continue
