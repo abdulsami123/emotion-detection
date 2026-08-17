@@ -15,7 +15,12 @@ from functools import lru_cache
 
 import numpy as np
 
-from autoace.config import ACTIVATION_WEIGHTS, BASELINE_WINDOW_S, SAMPLE_RATE
+from autoace.config import (
+    ACTIVATION_WEIGHTS,
+    BASELINE_MAX_COVERAGE,
+    BASELINE_WINDOW_S,
+    SAMPLE_RATE,
+)
 from autoace.vad import Segment
 
 
@@ -215,3 +220,36 @@ def activation_profile(per_third: list[float]) -> ActivationProfile:
     return ActivationProfile(
         activation_z=activation_z, slope_rising=slope_rising, peak_z=peak_z
     )
+
+
+def baseline_coverage(segments: list[Segment]) -> float:
+    """Fraction of the speech being scored that the baseline window consumes.
+
+    A self-baseline only carries information when it is drawn from a PROPER
+    SUBSET of the segments it scores. When BASELINE_WINDOW_S covers everything,
+    each segment is compared against a mean that includes itself, and the mean
+    z-score is exactly zero by construction - arithmetic, not signal.
+
+    Measured on the three labelled calls:
+        call_001  7.1s customer speech -> coverage 1.00 -> mean z -0.000
+        call_002 12.4s customer speech -> coverage 1.00 -> mean z +0.000
+        call_003 73.8s customer speech -> coverage 0.37 -> mean z +0.240
+
+    Callers should treat coverage above BASELINE_MAX_COVERAGE as "no activation
+    measurement available" and fall back to the prior, rather than reporting the
+    manufactured `low` that zero activation produces.
+    """
+    total = sum(s.duration for s in segments)
+    if total <= 0:
+        return 1.0
+    consumed = 0.0
+    for seg in segments:
+        consumed += seg.duration
+        if consumed >= BASELINE_WINDOW_S:
+            break
+    return min(1.0, consumed / total)
+
+
+def baseline_is_degenerate(segments: list[Segment]) -> bool:
+    """True when a self-baseline cannot yield a meaningful activation score."""
+    return baseline_coverage(segments) >= BASELINE_MAX_COVERAGE

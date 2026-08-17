@@ -46,6 +46,7 @@ from autoace.fuse import (
 )
 from autoace.io_audio import load_mono
 from autoace.prosody import (
+    baseline_is_degenerate,
     Tier,
     activation_profile,
     baseline_statistics,
@@ -151,6 +152,17 @@ def analyse_file(path: str) -> FileResult:
         diarization_degraded = assignment.degraded
         customer_segments = assignment.customer_segments
         tier = select_tier(assignment.customer_speech_seconds)
+
+        # A self-baseline only carries information when drawn from a proper
+        # SUBSET of the segments it scores. On short customer speech the 25s
+        # baseline window consumes everything, and the mean z-score is then
+        # exactly zero by construction - which trips ACTIVATION_LOW_Z and
+        # manufactures a `low` reading from no evidence at all. Measured, this
+        # is what dragged intensity to 1/3, below the 2/3 majority baseline.
+        # Route those calls down the Tier C path (emit the prior, cap
+        # confidence) rather than reporting a fabricated measurement.
+        if tier is not Tier.C and baseline_is_degenerate(assignment.customer_segments):
+            tier = Tier.C
 
         transcript = transcribe(path)
         asr_avg_logprob = transcript.avg_logprob

@@ -106,6 +106,18 @@ OVERLAP_RATE_MIN = 0.15                # MEASURED — sits between 0.063 and 0.2
 TIER_A_MIN_SPEECH_S = 15.0             # DERIVED
 TIER_C_MAX_SPEECH_S = 3.0              # DERIVED
 BASELINE_WINDOW_S = 25.0               # DERIVED
+# MEASURED 2026-08-17: when the baseline window consumes most of the customer
+# speech it is scoring, the z-scores are degenerate BY CONSTRUCTION - a set
+# z-scored against its own mean has mean exactly zero, which is arithmetic, not
+# signal. Measured baseline coverage and resulting mean activation:
+#     call_001  7.1s customer speech -> 100% consumed -> z = -0.000
+#     call_002 12.4s customer speech -> 100% consumed -> z = +0.000
+#     call_003 73.8s customer speech ->  37% consumed -> z = +0.240  (usable)
+# Zero activation trips ACTIVATION_LOW_Z and forces `low`, which is why
+# intensity scored 1/3 - BELOW the 2/3 constant-`medium` baseline. Above this
+# coverage there is no measurement, so the call is routed to the Tier C path
+# (emit `medium`, cap confidence) rather than reporting a manufactured `low`.
+BASELINE_MAX_COVERAGE = 0.80           # MEASURED — 0.37 usable vs 1.00 degenerate
 ACTIVATION_HIGH_Z = 1.0                # UNFITTED
 ACTIVATION_LOW_Z = 0.3                 # UNFITTED — no `low` example exists
 ACTIVATION_PEAK_Z = 2.0                # UNFITTED
