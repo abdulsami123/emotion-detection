@@ -622,8 +622,14 @@ trained on environmental audio from video; "sharp static" in telephony is a code
 artifact, a different physical phenomenon that simply is not well represented in the label
 space.
 
-*Action:* add a deterministic spectral classifier for transmission artifacts, and prefer it
-when the top environmental group is weak:
+> **REFUTED 2026-08-17 — both actions below were implemented and measured, and both failed.**
+> See §7.1.2. The spectral classifier does not work, and restricting the tagger to non-speech
+> regions made typing *worse*. The shipped module does whole-clip tagging with the spectral
+> classifier disabled. The text below is retained because the reasoning is what the measurement
+> tested.
+
+*Action (attempted):* add a deterministic spectral classifier for transmission artifacts, and
+prefer it when the top environmental group is weak:
 
 | signature | measurement | label |
 |---|---|---|
@@ -636,6 +642,50 @@ Selection: if `ast_relative_dominance < TYPE_AST_MIN_DOM` **and** a spectral sig
 emit the spectral label. Otherwise emit the AST group. This splits the field along the physical
 boundary that matters — AudioSet owns *environmental* noise, DSP owns *transmission* noise —
 rather than asking one model to cover both.
+
+#### 7.1.2 What measurement actually established (2026-08-17)
+
+Both §7.1.1 actions were built and tested. Both failed, and the module now reflects what holds.
+
+**Refutation A — "tag non-speech regions only" is wrong for telephony.** The argument was that
+speech masks background noise. Measured, it inverts:
+
+| call | truth | whole-clip AST | non-speech-only AST |
+|---|---|---|---|
+| call_001 | *(none)* | music (reldom 3.7) | music |
+| call_002 | **TV** | **TV** ✅ | music ✗ |
+| call_003 | sharp static | radio (reldom 8.6) | keyboard typing |
+
+In telephony the non-speech gaps are near-**silent** — which is exactly *why* the noise floor
+works as a presence detector — while the television is audible *underneath* the speech.
+Removing the speech removed the evidence. **Shipped: whole-clip tagging, speech classes
+suppressed afterwards.**
+
+**Refutation B — no spectral feature discriminates the transmission noise.** AudioSet genuinely
+is blind to it (`static` group scores 0.0013–0.0059 on every call, including the static one).
+But none of the proposed replacements works either, measured over the non-speech regions:
+
+| call | truth | flatness | transients/s | crest | kurtosis |
+|---|---|---|---|---|---|
+| call_001 | *(none)* | 0.0531 | **0.47** | **36.5** | **542** |
+| call_002 | TV | 0.1157 | 0.28 | 12.9 | 81 |
+| call_003 | **sharp static** | **0.0426** | 0.29 | 21.0 | 109 |
+
+Flatness is *lowest* on the static call, where broadband hiss should be highest. Transient rate,
+crest factor and kurtosis are all *highest* on the clean call. A 6 dB mains-hum test fired on
+all three. **Shipped: the detector is disabled**, kept as a documented seam rather than emitting
+an arbitrary label. `background_noise_type` for a line-artifact call therefore gets the nearest
+environmental label — a known, recorded inaccuracy, pinned as `xfail(strict=True)`.
+
+**One useful signal did emerge.** Relative dominance (top group ÷ median group) separates clean
+from noisy where absolute probability cannot: **3.7** on the clean call against **47.3** and
+**8.6** on the two noisy ones, while all absolute probabilities sit between 0.006 and 0.023.
+That makes it a usable secondary presence signal alongside the floor — note `TAG_MIN_DOM` is
+currently 1.8, which all three clear, so it needs raising to ~5 to discriminate.
+
+**Also corrected:** AST windowing was specified at 1.0s/0.5s. AST's native input is 10.24s, so
+every short window was zero-padded to that length — ~97 padded forward passes per call instead
+of ~10, on inputs outside the training distribution. Now 10.0s/5.0s.
 
 ### 7.2 `background_noise_present` — two-condition gate
 
