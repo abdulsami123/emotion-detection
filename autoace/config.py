@@ -77,10 +77,26 @@ MUFFLE_HF_MIN = 0.015                  # DERIVED — well below the telephony fl
 LOW_VOLUME_LUFS = -35.0                # DERIVED
 
 # --------------------------------------------------------------- other
-OVERLAP_MIN_SEGMENT_S = 0.5            # DERIVED — ignore backchannels
-OVERLAP_MIN_TOTAL_S = 1.0              # DERIVED
+# The pyannote overlapped-speech-detection pipeline this was originally
+# sized for is gated on HuggingFace and unavailable here (see OVERLAP_* below
+# for the ECAPA-based replacement that shipped instead). Confirmed via grep
+# that nothing else in the codebase references OVERLAP_MIN_SEGMENT_S /
+# OVERLAP_MIN_TOTAL_S, so they are removed rather than kept as dead weight —
+# this comment is the record of that decision.
 # MEASURED: call_003 has a 7.35 s non-speech gap and is labelled false.
 LONG_SILENCE_SEC = 10.0                # MEASURED — must exceed 7.35
+
+# --------------------------------------------------------------- overlap
+# Speaker change WITHIN one VAD segment implies two concurrent voices.
+# pyannote's overlap model is gated on HuggingFace and unavailable, so this
+# reuses the ECAPA encoder already loaded for diarization.
+OVERLAP_SUBWINDOW_S = 0.8              # DERIVED — long enough for stable ECAPA
+OVERLAP_HOP_S = 0.4                    # DERIVED
+OVERLAP_MIN_SEGMENT_S = 1.6            # DERIVED — need >=2 sub-windows
+OVERLAP_CHANGE_COS = 0.5               # DERIVED — below this is a speaker change
+# MEASURED: rate of sub-window pairs below OVERLAP_CHANGE_COS is
+#   0.063 (call_001, overlap=false) / 0.224 (call_003, true) / 0.458 (call_002, true)
+OVERLAP_RATE_MIN = 0.15                # MEASURED — sits between 0.063 and 0.224
 
 # ----------------------------------------------------------- intensity
 TIER_A_MIN_SPEECH_S = 15.0             # DERIVED
