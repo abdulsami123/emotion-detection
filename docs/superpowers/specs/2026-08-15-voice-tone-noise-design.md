@@ -841,23 +841,39 @@ fail-isolation the dashboard requires (§13). Held in reserve if the ceiling tig
 Total = compute + $0.00133 LLM. Compute cost is instance-price-dependent, and **the CPU path's
 viability flips inside the realistic price range**:
 
+> **Revised 2026-08-16 against measurement.** The original model assumed faster-whisper ran at
+> ~1.0× realtime on CPU, taken from an exploratory `openai-whisper` run. The CTranslate2 build
+> at `int8` measures **0.41× realtime** over the three calls (22.3s / 18.9s / 56.1s of
+> wall-clock for 30.9s / 35.0s / 171.9s of audio = 97.3s for 237.8s). That is a 2.4× error in
+> the dominant CPU stage, and it changes the conclusion below.
+
+Revised CPU stage total: **~40.7 s per audio-minute** (ASR 24.5 measured, down from 60
+assumed; all other stages unchanged).
+
 | path | instance | $/hr | s/audio-min | compute | **total** | vs ceiling |
 |---|---|---|---|---|---|---|
-| CPU | 4 vCPU spot | $0.05 | 76 | $0.00106 | **$0.00239** | 20% headroom |
-| CPU | 4 vCPU on-demand | $0.10 | 76 | $0.00211 | **$0.00344** | ❌ **breaches by 15%** |
+| CPU | 4 vCPU spot | $0.05 | 40.7 | $0.00057 | **$0.00190** | 37% headroom |
+| CPU | 4 vCPU on-demand | $0.10 | 40.7 | $0.00113 | **$0.00246** | 18% headroom |
 | GPU | T4 spot | $0.20 | 11 | $0.00061 | **$0.00194** | 35% headroom |
 | GPU | T4 on-demand | $0.35 | 11 | $0.00107 | **$0.00240** | 20% headroom |
 | GPU | L4 | $0.50 | 11 | $0.00153 | **$0.00286** | 5% headroom |
 
-**GPU is both faster and cheaper per audio minute than CPU**, despite costing 4–10× more per
-hour, because it is ~7× faster. This is counterintuitive enough to belong in the memo.
+**The earlier "GPU is both faster and cheaper" claim does not survive measurement.** At spot
+pricing CPU ($0.00190) and GPU ($0.00194) are within noise of each other, and CPU at
+*on-demand* pricing now fits comfortably where it previously breached by 15%. GPU remains
+~4× faster in wall-clock, so it is still the right choice for batch throughput — but that is
+now a **latency** argument, not a cost one.
 
-**CPU break-even: $0.079/hr.** Above that instance price the CPU path breaches the ceiling.
-That is a checkable number, not a hand-wave — and it means CPU-only is viable only on
-aggressive spot pricing, while GPU holds across the entire realistic range.
+**Revised CPU break-even: $0.148/hr** (was $0.079). Every realistic CPU instance price sits
+below that, so the CPU path is no longer contingent on spot pricing.
 
-**Recommended deployment: GPU.** The CPU path is documented because the dev box is CPU-only
-(torch 2.13.0+cpu, no CUDA) and it must remain runnable for reproducibility.
+**Recommended deployment: GPU for batch throughput, CPU entirely viable for cost.** The dev box
+is CPU-only (torch 2.13.0+cpu, no CUDA) and the CPU path must stay runnable for reproducibility
+regardless.
+
+*Lesson for the memo:* the single largest term in the cost model was wrong by 2.4× because it
+was inherited from a different ASR implementation rather than measured on the one actually
+shipped. Every dominant term should be measured before the model is reported.
 
 ### 10.2 Stated exclusions
 
@@ -879,7 +895,7 @@ Measured on the dev box (CPU-only torch 2.13.0, no CUDA):
 |---|---|---|
 | decode + Silero VAD | 0.02 | 0.02 |
 | ECAPA + clustering | 0.03 | 0.01 |
-| **faster-whisper large-v3-turbo** | **1.0** *(measured)* | 0.05 |
+| **faster-whisper large-v3-turbo** | **0.41** *(measured 2026-08-16, int8)* | 0.05 |
 | eGeMAPS | 0.01 | 0.01 |
 | audeering SER | 0.05 | 0.01 |
 | AST tagging | 0.02 | 0.01 |
@@ -889,8 +905,14 @@ Measured on the dev box (CPU-only torch 2.13.0, no CUDA):
 | **end-to-end, 3-min call** | **~4 min** | **~35s** |
 
 **Only the ASR row is measured.** Every other figure is an estimate and is labelled as such in
-the memo. ASR dominates the CPU path at roughly 80% of total wall-clock, which is why the GPU
-recommendation in §10.1 is a latency argument as much as a cost one.
+the memo. ASR still dominates the CPU path at roughly 60% of total wall-clock (down from ~80%
+under the pre-measurement assumption), which is why GPU remains the throughput recommendation
+even though §10.1 no longer supports it on cost.
+
+Measured per call (CPU, `int8`, model resident): call_001 22.3s / 30.9s audio, call_002 18.9s /
+35.0s, call_003 56.1s / 171.9s. Longer files are proportionally faster — the fixed model-load
+and warm-up cost amortises, so 0.41× is a blended figure and the marginal rate on long calls is
+closer to 0.33×.
 
 CPU path: ~76s per audio minute. GPU path: ~11s per audio minute. Batch of 50 three-minute
 calls: ~3.2 hours CPU / ~28 minutes GPU, with a worker pool of 4 giving near-linear speedup
@@ -1019,8 +1041,19 @@ Stated in the memo, not discovered by the grader:
    the mixed cluster outranks the pure-agent one — the similarity metric is not ordering
    correctly, not merely mis-thresholded.
 
-   **Planned fix:** per-segment classification informed by ASR language ID (§4.4), so segments
-   in different languages can still map to one speaker. Deferred until ASR exists.
+   **Planned fix — now proven viable (2026-08-16).** Per-segment classification informed by
+   ASR language ID, so segments in different languages can still map to one speaker. Two
+   measurements establish the path:
+
+   - `asr.detect_language()` over call_002's opening 8s returns `en`; over its final 12s
+     returns `es`. Pinned by `test_detect_language_works_on_an_audio_slice`. The signal the
+     fix needs demonstrably exists at slice granularity.
+   - It must come from that function, **not** from `transcribe()`. faster-whisper's `Segment`
+     dataclass carries no `language` field (verified against 1.2.1), and clip-level detection
+     reports call_002 as **`en`** despite its Spanish second half, because detection samples
+     only the opening window. `AsrSegment` therefore deliberately has no `language` field —
+     an earlier draft populated one from the clip-level value, which would have looked
+     per-segment while carrying no per-segment information and made the fix silently no-op.
    Tracked by `test_code_switched_call_does_not_inflate_customer_speech`, marked
    `xfail(strict=True)` so it flips to XPASS the moment it genuinely passes.
 
