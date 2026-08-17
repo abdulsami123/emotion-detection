@@ -1,0 +1,42 @@
+{
+  "n_labelled": 3,
+  "errors": 0,
+  "tone": {
+    "accuracy": 0.3333333333333333,
+    "macro_f1": 0.25,
+    "confusion": {
+      "upset": {
+        "distressed": 1
+      },
+      "neutral": {
+        "distressed": 1
+      },
+      "satisfied": {
+        "satisfied": 1
+      }
+    }
+  },
+  "intensity": {
+    "accuracy": 0.6666666666666666,
+    "macro_f1": 0.4,
+    "confusion": {
+      "high": {
+        "medium": 1
+      },
+      "medium": {
+        "medium": 2
+      }
+    },
+    "constant_medium_baseline": 0.6666666666666666
+  },
+  "noise": {
+    "present_accuracy": 1.0,
+    "severity_macro_f1": 1.0,
+    "type_accuracy": 0.6666666666666666
+  },
+  "technical": {
+    "audio_quality": 1.0,
+    "speaker_overlap_present": 1.0,
+    "long_silence_present": 1.0
+  }
+}
