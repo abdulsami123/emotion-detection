@@ -36,10 +36,14 @@ DIARIZATION_MIN_SILHOUETTE = 0.10      # DERIVED — below, mark degraded
 # MEASURED: the one no-noise call sits at -56.3 dBFS; both medium calls at
 # -52.1 and -47.0. Boundaries between them are UNFITTED.
 NOISE_FLOOR_PRESENT = -55.0            # MEASURED (anchor at -56.3 / -52.1)
-NOISE_SEVERITY_BANDS = [               # (upper bound dBFS, severity)
-    (-55.0, "none"),                   # MEASURED
-    (-50.0, "low"),                    # UNFITTED — no `low` example exists
-    (-44.0, "medium"),                 # MEASURED (anchors -52.1, -47.0)
+NOISE_SEVERITY_BANDS = [               # (inclusive upper bound, severity)
+    (-55.0, "none"),                   # MEASURED — the one `none` call is -56.3
+    (-53.0, "low"),                    # UNFITTED — no `low` example exists, but
+                                       #   the bound MUST sit below -52.1 or the
+                                       #   lower `medium` anchor falls into `low`.
+                                       #   An earlier -50.0 did exactly that and
+                                       #   mislabelled call_002 as `low`.
+    (-44.0, "medium"),                 # MEASURED — anchors -52.1 and -47.0
     (999.0, "high"),                   # UNFITTED — no `high` example exists
 ]
 TAG_MIN_DOM = 1.8                      # UNFITTED — top group / median group ratio

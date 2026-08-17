@@ -80,3 +80,52 @@ def test_empty_region_returns_a_floor_sentinel(audio):
     """No non-speech at all must not raise or return 0.0, which would read as
     an extremely loud floor and force `high` severity."""
     assert noise_floor_dbfs(audio["call_001.ogg"], []) <= -80.0
+
+
+# ---------------------------------------------------------------------------
+# The test that was missing, and its absence let two real bugs through.
+#
+# The suite previously checked only that floors were ORDERED and that they
+# straddled NOISE_FLOOR_PRESENT. Both held while severity was wrong on two of
+# three calls: first because a minimum-statistics estimator drifted the floor
+# 5 dB (collapsing the two noisy calls into one band), then because
+# NOISE_SEVERITY_BANDS placed the low/medium boundary at -50.0, above the
+# -52.1 `medium` anchor. Ordering assertions cannot catch either. Assert the
+# label the schema actually emits.
+# ---------------------------------------------------------------------------
+
+from autoace.config import NOISE_SEVERITY_BANDS
+
+
+def _severity_for(floor_db: float) -> str:
+    for upper_bound, name in NOISE_SEVERITY_BANDS:
+        if floor_db <= upper_bound:
+            return name
+    return "high"
+
+
+@pytest.mark.parametrize(
+    "name,expected_severity",
+    [("call_001.ogg", "none"), ("call_002.ogg", "medium"), ("call_003.ogg", "medium")],
+)
+def test_floor_maps_to_the_labelled_severity(audio, name, expected_severity):
+    """End-to-end on the field that ships: floor -> severity band -> label."""
+    y = audio[name]
+    floor = noise_floor_dbfs(y, non_speech_segments(y))
+    assert _severity_for(floor) == expected_severity, (
+        f"{name}: floor {floor:.1f} dB mapped to {_severity_for(floor)!r}, "
+        f"expected {expected_severity!r}"
+    )
+
+
+def test_severity_bands_are_monotonic_and_bracket_the_anchors():
+    """A band table whose bounds are out of order, or which places a boundary
+    between two same-class anchors, is silently broken. -52.1 and -47.0 are
+    both `medium`, so no boundary may sit between them."""
+    bounds = [b for b, _ in NOISE_SEVERITY_BANDS]
+    assert bounds == sorted(bounds), "severity bounds must be ascending"
+    for boundary in bounds[:-1]:
+        assert not (-52.1 < boundary < -47.0), (
+            f"boundary {boundary} sits between the two `medium` anchors "
+            f"(-52.1, -47.0) and would split them across bands"
+        )

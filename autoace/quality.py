@@ -14,7 +14,6 @@ from functools import lru_cache
 import librosa
 import numpy as np
 import torch
-from scipy.ndimage import minimum_filter1d
 
 from autoace.acoustics import (
     clip_percentage,
@@ -49,8 +48,9 @@ _FRAME_HOP = SAMPLE_RATE // 100  # 10 ms, matching acoustics.stft_magnitude's ho
 # signal. Speech pushes energy up transiently; persistent noise does not dip
 # below its own floor, so the sliding minimum recovers the ambient level
 # under speech too, without relying on the VAD label being correct.
-_MCRA_SMOOTH_FRAMES = 9    # ~90 ms power smoothing to damp frame-to-frame variance
-_MCRA_WINDOW_FRAMES = 100  # ~1.0 s minimum-tracking window (standard MS default)
+# Must match acoustics.baseline_characterisation, which produced the
+# NOISE_SEVERITY_BANDS anchors. Changing it invalidates those thresholds.
+_FLOOR_PERCENTILE = 60
 
 
 @dataclass
@@ -95,23 +95,49 @@ def noise_floor_dbfs(y: np.ndarray, non_speech: list[Segment]) -> float:
     all in this call: an empty list (nothing ever judged non-speech) means no
     evidence to estimate from, so we return a sentinel rather than 0.0, which
     would read as an implausibly loud floor and force `high` severity.
-    Given at least one such region exists, the estimate itself comes from
-    minimum-statistics tracking over the WHOLE recording (see module-level
-    comment) rather than a naive mean restricted to the VAD segments, because
-    the latter silently breaks the calibrated ordering when noise leaks into
-    VAD's speech label.
+    Given at least one such region exists, the estimate uses the SAME
+    percentile-split aggregation that produced the calibration anchors in
+    `acoustics.baseline_characterisation`: mean level of frames below the 60th
+    percentile of frame energy.
+
+    This is deliberately the crude estimator rather than a better one, and the
+    reason is scale consistency. Two alternatives were implemented and measured:
+
+      estimator                     call_001   call_002   call_003
+      ------------------------------ --------  ---------  ---------
+      calibration anchors (truth)      -56.3     -52.1      -47.0
+                                       none     medium     medium
+      percentile split (SHIPPED)       -56.3     -52.1      -47.0
+                                       none     medium     medium   OK
+      minimum-statistics / MCRA        -56.8     -52.6      -52.0
+                                       none        low        low   WRONG
+      mean over Silero non-speech    ordering inverts (noise bursts land
+                                     inside VAD's speech label, leaving only
+                                     the quietest pauses in the gap bucket)
+
+    Minimum-statistics tracking is the more principled estimator in the
+    abstract - it is what speech-enhancement literature uses - but it seeks the
+    QUIETEST moments, which under-reports a continuous noise. It compressed
+    call_003 by 5 dB and collapsed the spread between the two noisy calls from
+    5.1 dB to 0.6 dB, putting both in the `low` band against a `medium` ground
+    truth. The `none`/`medium` boundary here is only 3 dB wide, so a 5 dB drift
+    is fatal.
+
+    The lesson: swapping the estimator without re-deriving the thresholds is
+    what breaks severity. With three labelled calls there is no headroom to
+    re-derive, so the estimator that produced the anchors is the one that
+    ships. If a better floor tracker is ever adopted, NOISE_SEVERITY_BANDS must
+    be re-measured against it in the same commit.
     """
     if not non_speech or _is_silent(y):
         return _FLOOR_SENTINEL
     db = frame_db(stft_magnitude(y))
-    if len(db) < _MCRA_WINDOW_FRAMES:
+    if db.size == 0:
         return _FLOOR_SENTINEL
-    power = 10.0 ** (db / 10.0)
-    kernel = np.ones(_MCRA_SMOOTH_FRAMES) / _MCRA_SMOOTH_FRAMES
-    smoothed = np.convolve(power, kernel, mode="same")
-    floor_power = minimum_filter1d(smoothed, size=_MCRA_WINDOW_FRAMES, mode="nearest")
-    floor_db = 10.0 * np.log10(np.maximum(floor_power, 1e-12))
-    return float(floor_db.mean())
+    quiet = db <= np.percentile(db, _FLOOR_PERCENTILE)
+    if not quiet.any():
+        return _FLOOR_SENTINEL
+    return float(db[quiet].mean())
 
 
 def speech_level_dbfs(y: np.ndarray, speech: list[Segment]) -> float:
