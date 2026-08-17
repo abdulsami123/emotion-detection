@@ -140,10 +140,20 @@ NEAR_THRESHOLD_FRACTION = 0.10         # within 10% of a boundary
 ASR_MIN_LOGPROB = -1.0                 # DERIVED
 REVIEW_THRESHOLD = 0.60                # dashboard review queue
 
-# coherence check
-VALENCE_POS_MIN = 0.45                 # UNFITTED
-VALENCE_NEG_MAX = 0.55                 # UNFITTED
-AROUSAL_HIGH_MIN = 0.50                # UNFITTED
+# coherence check (fuse.coherence_conflict)
+# MEASURED 2026-08-17: the SER axes are heavily COMPRESSED on this telephony
+# audio. Across the three labelled calls, valence spans only 0.534-0.638 and
+# arousal only 0.594-0.646 - nothing like the full [0,1] the model nominally
+# emits. Earlier values (0.45 / 0.55) sat INSIDE the observed valence range, so
+# the conflict check would have fired on roughly half of all calls regardless
+# of whether the label was right, penalising correct answers. call_001 (upset,
+# valence 0.534) escaped a spurious flag by only 0.017.
+# These bounds are deliberately set OUTSIDE the observed range, so the check
+# fires only on genuinely extreme disagreement rather than on normal variation.
+# Re-derive if a larger labelled set ever shows a wider spread.
+VALENCE_POS_MIN = 0.40                 # MEASURED — below the 0.534 minimum
+VALENCE_NEG_MAX = 0.70                 # MEASURED — above the 0.638 maximum
+AROUSAL_HIGH_MIN = 0.45                # MEASURED — below the 0.594 minimum
 
 # ------------------------------------------------------------- fixtures
 REPO_ROOT = Path(__file__).resolve().parent.parent
