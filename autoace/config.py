@@ -58,7 +58,13 @@ CRACKLE_MIN_COUNT = 3                  # DERIVED
 SQUIM_STOI_SLIGHT = 0.75               # UNFITTED — no impaired example exists
 SQUIM_STOI_SEVERE = 0.55               # UNFITTED
 CLIP_FRACTION_THRESHOLD = 0.001        # DERIVED — 0.1% of samples near full scale
-DROPOUT_MIN_MS = 30.0                  # DERIVED
+# MEASURED: longest true-digital-silence run on any of the three (all `clear`)
+# calls is 165 ms (call_003, a single occurrence — ordinary silence-suppressed
+# pause, not a dropout); call_001's longest is 38.9 ms, call_002's is 82.6 ms.
+# 30 ms fired on every call (natural inter-word pauses routinely exceed it).
+# Set comfortably above the largest observed natural gap so only sustained
+# dead air (network packet loss, not a conversational pause) fires.
+DROPOUT_MIN_MS = 200.0                 # MEASURED (largest natural gap 165 ms)
 ECHO_LAG_RANGE_MS = (20.0, 200.0)      # DERIVED
 ECHO_PEAK_MIN = 0.30                   # DERIVED
 # Telephony baseline: do NOT treat narrowband as muffling.
