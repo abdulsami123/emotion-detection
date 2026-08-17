@@ -897,13 +897,33 @@ viability flips inside the realistic price range**:
 > wall-clock for 30.9s / 35.0s / 171.9s of audio = 97.3s for 237.8s). That is a 2.4× error in
 > the dominant CPU stage, and it changes the conclusion below.
 
-Revised CPU stage total: **~40.7 s per audio-minute** (ASR 24.5 measured, down from 60
-assumed; all other stages unchanged).
+**Second revision, 2026-08-17 — the signal branch was also mis-estimated, in the opposite
+direction.** Measured at **67.6 s per audio-minute** against an estimated 12.5 s. Breakdown:
+
+| stage | estimated | measured (before) | measured (after fix) |
+|---|---|---|---|
+| SQUIM quality | 1.5 | **28.6** | ~9 |
+| AST typing | 1.0 | **30.9** | ~6 |
+| ECAPA overlap | 8.0 | 5.2 | 5.2 |
+| VAD | 0.2 | 0.5 | 0.5 |
+| noise floor | — | 0.6 | 0.6 |
+| **signal branch total** | **12.5** | **67.6** | **~21.7** |
+
+Both heavyweight stages scaled with call **duration**. But `background_noise_type` and
+`audio_quality` are **call-level** properties — neither needs every window. Sampling a fixed
+number of evenly-spaced windows (AST 6, SQUIM 3) makes both **O(1) per call** instead of
+O(duration), with every assertion preserved (call_002 still types as `TV`):
+
+> call_003 (172 s audio): 194 s → **62.2 s**, i.e. 1.13× → **0.36× realtime**
+
+Revised CPU stage total: **~50 s per audio-minute** — ASR 24.5 (measured, down from 60 assumed)
+plus signal branch 21.7 (measured, down from 67.6 unoptimised) plus prosody and SER still to be
+measured.
 
 | path | instance | $/hr | s/audio-min | compute | **total** | vs ceiling |
 |---|---|---|---|---|---|---|
-| CPU | 4 vCPU spot | $0.05 | 40.7 | $0.00057 | **$0.00190** | 37% headroom |
-| CPU | 4 vCPU on-demand | $0.10 | 40.7 | $0.00113 | **$0.00246** | 18% headroom |
+| CPU | 4 vCPU spot | $0.05 | 50 | $0.00069 | **$0.00202** | 33% headroom |
+| CPU | 4 vCPU on-demand | $0.10 | 50 | $0.00139 | **$0.00272** | 9% headroom |
 | GPU | T4 spot | $0.20 | 11 | $0.00061 | **$0.00194** | 35% headroom |
 | GPU | T4 on-demand | $0.35 | 11 | $0.00107 | **$0.00240** | 20% headroom |
 | GPU | L4 | $0.50 | 11 | $0.00153 | **$0.00286** | 5% headroom |
