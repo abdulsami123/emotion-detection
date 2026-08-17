@@ -11,6 +11,8 @@ __pycache__/
 # ---------------------------------------------------------------------------
 reference/
 aa/
+# Transcripts derived from the confidential calls - same category as the audio.
+tests/fixtures/asr_baseline.json
 
 # local model cache and batch scratch
 models/
