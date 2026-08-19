@@ -24,10 +24,16 @@ set** — with n=3 it establishes that the system reproduces known-good behaviou
 honest summary and it is not an accident — it is what the architecture was designed around after
 early analysis showed the tone problem is far harder on this data than it first appears.
 
-**Tone is currently measured on a degraded path.** The supplied `ANTHROPIC_API_KEY` returns HTTP
-401 (verified via both the SDK and raw `curl` against `/v1/models`), so every call falls back to
-the local NLI classifier. The Haiku path is implemented and unit-tested but has never executed
-against the live API. The 0.33 figure is the fallback's score, not the system's ceiling.
+*Tone and intensity are from the **live** `gpt-4o-mini` path, measured 2026-08-17.*
+
+**The tone classifier is OpenAI `gpt-4o-mini`.** An earlier Anthropic Haiku 4.5 implementation was
+never verifiable — that key returned HTTP 401 — and the provider was switched at the trial owner's
+request. Only `classify_tone` is vendor-specific: `build_prompt` and `parse_response` are
+provider-agnostic, so the prompt design survived the swap untouched.
+
+**Tone improved from 0/3 to 1/3 during that work, and the cause was not the model.** Agent and
+customer roles were **inverted on call_001**, so the tone branch was analysing the bot's uniformly
+flat TTS delivery as the customer's. See §6(e) — the single largest defect found in this build.
 
 ---
 
@@ -79,7 +85,7 @@ raw audio -> decode 16k mono (no loudness normalization, ever)
   SIGNAL BRANCH (raw audio)          TONE BRANCH (customer segments)
   floor -> present, severity         eGeMAPS -> speaker-relative z -> tags
   AST   -> type                      audeering SER -> arousal/dominance/valence
-  SQUIM + DSP -> audio_quality       Haiku over annotated transcript
+  SQUIM + DSP -> audio_quality       gpt-4o-mini over annotated transcript
   ECAPA intra-segment -> overlap        \-> NLI fallback if unavailable
   dead air -> long_silence           activation x trajectory -> intensity
       |                                    |
@@ -100,17 +106,34 @@ failure mode would have been losing the reliable points because a remote service
 
 ## 4. Cost analysis
 
-**Ceiling: $0.003 per audio minute.** LLM at ~830 input / ~100 output tokens per audio minute.
+**Ceiling: $0.003 per audio minute.**
 
-| model | $/MTok in | $/MTok out | $/audio-min | verdict |
-|---|---|---|---|---|
-| **Haiku 4.5** | $1 | $5 | **$0.00133** | fits, with room for compute |
-| Sonnet 5 | $3 | $15 | $0.00399 | exceeds the whole ceiling on the LLM alone |
-| Opus 5 | $5 | $25 | $0.00665 | 2.2× the ceiling |
+**Token usage is measured against the live API, not estimated.** A 30.9-second call sends
+**2712 input tokens** and returns 124 output tokens (`gpt-4o-mini`) or 205 (`gpt-4.1-mini`). The
+earlier figure of ~830 input tokens was an estimate and was wrong by 3.3× — the third cost-model
+error in this build, all three found by measuring rather than reasoning.
 
-The model choice is **forced by arithmetic, not preference**. Sonnet 5 is costed at its standard
-$3/$15 rather than the introductory rate, which expires 2026-08-31 — a production cost model
-should not depend on promotional pricing.
+Roughly **2500 of those input tokens are the fixed system + few-shot prefix**, so LLM cost per
+*audio minute* is dominated by fixed prompt overhead on short calls and amortises on long ones:
+
+| call length | input tokens | `gpt-4o-mini` $/call | $/audio-min |
+|---|---|---|---|
+| 0.5 min (call_001) | 2712 | $0.00048 | **$0.00093** |
+| 2.9 min (call_003) | ~3700 | $0.00071 | **$0.00025** |
+
+**Prompt caching is reachable here and was not on the previous provider.** OpenAI caches prefixes
+over 1024 tokens automatically at half price and the ~2500-token prefix qualifies, so the few-shots
+sit in a stable `_system_content()` prefix with only the per-call payload in the user message.
+Haiku's 4096-token cache minimum was never met by this prompt, so this is a genuine gain from the
+switch rather than a wash.
+
+Rates assumed: `gpt-4o-mini` $0.15 / $0.60 per MTok, `gpt-4.1-mini` $0.40 / $1.60. **These should be
+re-verified against OpenAI's current pricing page before submission** — they are the one input here
+not measured directly from the API.
+
+`gpt-4.1-mini` is the documented upgrade candidate at roughly 3× the input cost. Both models
+returned the correct `upset / high` on call_001 in an isolated smoke test, so the choice is not
+decidable on three labelled calls and is recorded as an A/B for a larger set.
 
 ### Measured compute
 
@@ -228,6 +251,36 @@ instead of hidden behind a fabricated label.
 
 ---
 
+**(e) Agent and customer roles were inverted on one of three calls — the largest defect found.**
+Diarization clusters voices correctly, then has to decide which cluster is the bot, and its anchor
+was *"the agent greets first"*. On call_001 the caller opens with an impatient `"Come on."` at 1.2s
+and the bot greets at 3.7s, so that anchor picked the wrong cluster and **inverted every role in
+the call**:
+
+| segment | text | assigned (before) |
+|---|---|---|
+| 1.2–2.0 | "Come on." | agent ✗ |
+| 3.7–6.9 | "Hi, I'm Erica from Toyota of Braintree. How can I help?" | customer ✗ |
+| 8.7–11.3 | "Yes, hi. Are you a real person?" | agent ✗ |
+
+The tone branch therefore spent the whole run analysing the bot's uniformly flat TTS delivery as
+if it were the customer's, which is why tone scored **0/3 regardless of provider** — the same
+model, given the caller's actual utterances by hand, returned the correct `upset / high`.
+
+Fixed by `pipeline.verify_roles`, which re-anchors on **transcript content** (phrases a
+receptionist structurally says — "how can I help", "transferring you", plus Spanish equivalents)
+rather than on turn order, and only swaps on a strict majority of evidence. Phrases are
+deliberately *not* name-specific, since the hidden set may use a different bot or dealership.
+Measured: call_001 swaps and its tone becomes correct; calls 002 and 003 were already right and
+are untouched.
+
+Two lessons worth carrying: an assumption that holds on two of three examples is not a rule, and
+the test asserting it (`test_agent_speaks_first`) claimed it was *"true on all three provided
+calls"* while only ever checking the one where it held. Both are now corrected, with the
+counter-example pinned.
+
+---
+
 ## 7. Calibration position
 
 **Thresholds are derived from definitions and physics, then validated against three points — not
@@ -285,10 +338,12 @@ matrices are a formality at this n.
 
 | item | detail |
 |---|---|
-| Model | `claude-haiku-4-5` (Anthropic) |
-| Pricing assumed | $1 / MTok input, $5 / MTok output |
-| Per audio minute | ~830 input tokens, ~100 output tokens → **$0.00133** |
-| Retention | zero-retention to be configured on the account before production use |
+| Model | **`gpt-4o-mini` (OpenAI)** |
+| Pricing assumed | $0.15 / MTok input, $0.60 / MTok output — **re-verify before submission** |
+| Measured usage | 2712 input / 124 output tokens on a 30.9s call |
+| Per audio minute | **$0.00093** on a 0.5-min call, **$0.00025** on a 2.9-min call |
+| Upgrade candidate | `gpt-4.1-mini` at ~3× input cost; A/B pending a larger labelled set |
+| Retention | zero-retention / no-training to be confirmed on the account before production use |
 | **Does audio leave AutoAce infrastructure?** | **No.** Audio is never transmitted. |
 | What does leave? | The customer-side transcript, discretised prosody tags, the SER triple, and an agent-behaviour summary |
 | Fallback if egress is refused | `autoace/tone_nli.py` runs `bart-large-mnli` locally; no network at all |
@@ -301,15 +356,21 @@ the target repository is public.
 
 ## 10. Next steps, in priority order
 
-1. **Supply a valid API key and re-measure tone.** Everything else about tone is speculation until
-   the primary path runs once.
-2. **Fix code-switched speaker assignment** using per-segment `detect_language()` — viability
-   already demonstrated, and it currently corrupts one of three provided calls.
+1. **Fix code-switched speaker assignment** using per-segment `detect_language()` — viability
+   already demonstrated (§8.2). It is now the **direct cause of one of the two remaining tone
+   errors**: call_002 attributes 12.4s to a customer who speaks ~0.9s, so the classifier reads the
+   bot's Spanish as the caller's.
+2. **Attack politeness masking**, the other remaining tone error. call_003 is labelled `satisfied`
+   while the caller is repeatedly blocked; the prompt carries an explicit rule for this and the
+   model still reads the situation as frustration. Candidate signals: closing-turn sentiment
+   weighted above mid-call content, and SER valence trend rather than call-level mean.
 3. **Collect 100–300 labelled calls**, weighted toward the absent classes. Every remaining item is
    gated on this.
 4. **Fit rather than reason** the activation weights and severity bands, and run a genuine
    stratified evaluation with per-class figures.
-5. **A/B Sonnet 5 via the Batch API** (halves LLM cost, bringing it to ~$0.0020/min) against Haiku
-   — the one accuracy upgrade the ceiling permits.
+5. **A/B `gpt-4.1-mini` against `gpt-4o-mini`.** LLM cost is now a small fraction of the ceiling
+   ($0.00025–$0.00093 per audio minute against $0.003), so the budget comfortably permits the
+   stronger model — the constraint is evidence, not money. The OpenAI Batch API halves cost again
+   if throughput allows.
 6. **Find a real line-noise discriminator** for `background_noise_type`, which needs labelled
    examples of static, hum and crackle.

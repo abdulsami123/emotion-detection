@@ -34,7 +34,7 @@ bare filename, and a `result_json` column holding the expected JSON object.
 ```bash
 python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-export ANTHROPIC_API_KEY=sk-ant-...               # optional; see "Without an API key" below
+export OPENAI_API_KEY=sk-...                       # optional; see "Without an API key" below
 ```
 
 **Do not relax the `gradio` / `transformers` / `pydantic` pins.** They are genuinely constrained:
@@ -94,7 +94,7 @@ Rows flagged **REVIEW** — confidence below 0.60, or conflicting evidence — s
 
 The tone branch is two-tier and degrades on purpose:
 
-1. `claude-haiku-4-5` over an annotated transcript (primary)
+1. `gpt-4o-mini` over an annotated transcript (primary), via `OPENAI_API_KEY`
 2. `bart-large-mnli` zero-shot, entirely local (fallback)
 3. Neutral prior only if both fail
 
@@ -141,7 +141,7 @@ autoace/
   signal_branch.py  assembles the six deterministic fields
   prosody.py        eGeMAPS, speaker-relative activation, degenerate-baseline detection
   ser.py            dimensional arousal / dominance / valence
-  tone_llm.py       Haiku prompt assembly and structured output
+  tone_llm.py       prompt assembly + OpenAI structured output (only vendor-specific file)
   tone_nli.py       local zero-shot fallback and second approach
   fuse.py           intensity reconciliation, agreement-based confidence
   pipeline.py       per-file orchestration with fail isolation
