@@ -17,8 +17,30 @@ AST_MODEL = "MIT/ast-finetuned-audioset-10-10-0.4593"
 SER_MODEL = "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"
 NLI_MODEL = "facebook/bart-large-mnli"
 OVERLAP_MODEL = "pyannote/overlapped-speech-detection"
-LLM_MODEL = "claude-haiku-4-5"
+# Tone classifier. OpenAI rather than Anthropic per the trial owner's choice.
+# gpt-4o-mini is the closest analogue to the Haiku tier this replaced: cheap,
+# fast, supports strict structured outputs, and still accepts temperature=0.
+# The gpt-5-* reasoning tiers do NOT honour temperature, and determinism is a
+# reproducibility requirement here - a consistent label matters as much as an
+# accurate one when the grader re-runs the batch.
+LLM_PROVIDER = "openai"
+LLM_MODEL = "gpt-4o-mini"
+# Upgrade candidate, ~3x the input cost. Both got call_001 right in a live
+# smoke test (upset/high, matching ground truth); gpt-4.1-mini returned a
+# longer rationale and higher self-confidence. Worth an A/B on a larger
+# labelled set, not decidable on one call.
+LLM_MODEL_UPGRADE = "gpt-4.1-mini"
 LLM_TEMPERATURE = 0.0
+LLM_MAX_OUTPUT_TOKENS = 1024
+
+# MEASURED 2026-08-17 against the live API, not estimated. The full prompt
+# (system + few-shot + payload) is 2712 input tokens on a 30.9s call, against
+# an earlier ESTIMATE of 830 - a 3.3x error. Roughly 2500 of those are the
+# fixed system+few-shot prefix, so cost per AUDIO MINUTE is dominated by fixed
+# prompt overhead on short calls and amortises on long ones.
+# Output measured at 124 tokens (gpt-4o-mini) / 205 (gpt-4.1-mini).
+LLM_MEASURED_INPUT_TOKENS = 2712
+LLM_MEASURED_OUTPUT_TOKENS = 124
 
 SAMPLE_RATE = 16000
 

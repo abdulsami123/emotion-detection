@@ -6,13 +6,13 @@
     "macro_f1": 0.25,
     "confusion": {
       "upset": {
-        "distressed": 1
+        "upset": 1
       },
       "neutral": {
-        "distressed": 1
+        "frustrated": 1
       },
       "satisfied": {
-        "satisfied": 1
+        "frustrated": 1
       }
     }
   },

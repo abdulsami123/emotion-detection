@@ -27,7 +27,7 @@ opensmile>=2.5
 speechbrain>=1.0
 scikit-learn>=1.5
 silero-vad>=5.1
-anthropic>=0.40
+openai>=1.50            # tone classifier (see autoace/config.py LLM_MODEL)
 pydantic>=2.5,<2.12
 gradio==5.44.1
 pandas>=2.1

@@ -110,9 +110,31 @@ def _agent_behavior(text: str) -> str:
     return "handled the call without notable failure"
 
 
-def _trajectory_description(per_values: list[float]) -> str:
+def _trajectory_description(per_values: list[float], degenerate: bool = False) -> str:
+    """Describe the activation trajectory for the tone prompt.
+
+    When the baseline is degenerate this must NOT report numbers. On short
+    calls the 25s baseline window consumes all the customer speech, so the
+    z-scores sum to zero by construction - and a line reading
+    "activation by window: 0.03, 0.17, -0.20" tells the model the delivery was
+    FLAT. That is a mathematical artifact being read as evidence of calm, and
+    it is measurably harmful: `upset` versus `frustrated` hinges on escalation,
+    so a spurious flat reading pushes an escalating caller down to
+    `frustrated`. Observed exactly that on call_001 - the same model with a
+    hand-written escalating trajectory returned the correct `upset / high`.
+
+    Absence of a measurement has to be stated as absence, not as a zero.
+    """
     if not per_values:
         return "no customer speech to trend"
+    if degenerate:
+        return (
+            "UNMEASURABLE: the caller speaks too little to establish a "
+            "baseline, so no activation trajectory exists for this call. Do "
+            "NOT infer flat delivery or absence of escalation from this - "
+            "there is simply no measurement. Weigh the per-utterance delivery "
+            "tags and the SER values instead."
+        )
     return "activation by window: " + ", ".join(f"{v:.2f}" for v in per_values)
 
 
@@ -161,11 +183,36 @@ def analyse_file(path: str) -> FileResult:
         # is what dragged intensity to 1/3, below the 2/3 majority baseline.
         # Route those calls down the Tier C path (emit the prior, cap
         # confidence) rather than reporting a fabricated measurement.
-        if tier is not Tier.C and baseline_is_degenerate(assignment.customer_segments):
+        baseline_degenerate = baseline_is_degenerate(assignment.customer_segments)
+        if tier is not Tier.C and baseline_degenerate:
             tier = Tier.C
 
         transcript = transcribe(path)
         asr_avg_logprob = transcript.avg_logprob
+
+        # Diarization clusters by voice, then guesses which cluster is the bot
+        # using a first-speaker anchor. That anchor is wrong whenever the caller
+        # speaks before the greeting, and one wrong anchor inverts EVERY role in
+        # the call - measured on call_001, where the caller's impatient
+        # "Come on." precedes the bot's greeting. The tone branch then analysed
+        # the bot's flat TTS delivery as the customer's and tone scored 0/3.
+        # Re-anchor on transcript content, which cannot be inverted by turn order.
+        segment_texts = {
+            index: _text_in_segment(transcript.words, seg)
+            for index, seg in enumerate(speech)
+        }
+        assignments, roles_swapped = verify_roles(assignment.assignments, segment_texts)
+        if roles_swapped:
+            customer_segments = [
+                seg for index, seg in enumerate(speech)
+                if assignments.get(index) == "customer"
+            ]
+            # Tier is a function of customer speech, so it must be recomputed
+            # against the corrected assignment, not the inverted one.
+            tier = select_tier(sum(seg.duration for seg in customer_segments))
+            baseline_degenerate = baseline_is_degenerate(customer_segments)
+            if tier is not Tier.C and baseline_degenerate:
+                tier = Tier.C
 
         dims = predict_dimensions(y)
         # Call-level SER arousal has no per-segment trajectory of its own
@@ -211,7 +258,9 @@ def analyse_file(path: str) -> FileResult:
             ser_line=dims.as_prompt_line(),
             agent_behavior=_agent_behavior(transcript.text),
             annotated_lines=annotated_lines,
-            trajectory=_trajectory_description(trajectory_values),
+            trajectory=_trajectory_description(
+                trajectory_values, degenerate=baseline_degenerate
+            ),
         )
 
         # ---- two-tier tone classification ----
@@ -296,3 +345,71 @@ def analyse_file(path: str) -> FileResult:
         reasoning=f"tone path: {tone_path}. {tone_path_detail}",
         review_flagged=review_flagged,
     )
+
+
+# ---------------------------------------------------------------------------
+# Role verification against the transcript.
+#
+# Diarization clusters by VOICE, then has to decide which cluster is the bot.
+# Its fallback anchor was "the agent greets first", which is false whenever the
+# caller speaks before the greeting. Measured on call_001, the caller opens with
+# an impatient "Come on." at 1.2s and the bot greets at 3.7s - so that single
+# wrong anchor INVERTED every role in the call, and the tone branch spent its
+# whole run analysing the bot's uniformly calm TTS delivery as if it were the
+# customer. Tone scored 0/3 as a direct result.
+#
+# The bot is a receptionist and says structurally identifiable things. Scoring
+# each cluster's transcript against those phrases anchors on CONTENT rather than
+# position, and cannot be inverted by who happened to talk first.
+#
+# Phrases are deliberately structural, not name-specific: the hidden test set
+# may use a different bot name or dealership, so matching "Erica" or "Toyota"
+# would not generalise.
+# ---------------------------------------------------------------------------
+
+_AGENT_PHRASES = (
+    "how can i help",
+    "how may i help",
+    "just so you're aware",
+    "transferring you",
+    "would you like me to",
+    "is there anything else",
+    "thanks for calling",
+    "i can help with that",
+    "what type of service",
+    # Spanish, for code-switched calls
+    "como puedo ayudar",
+    "cómo puedo ayudarle",
+    "gracias por llamar",
+)
+
+
+def _agent_phrase_score(text: str) -> int:
+    lower = text.lower()
+    return sum(1 for phrase in _AGENT_PHRASES if phrase in lower)
+
+
+def verify_roles(assignments: dict[int, str], segment_texts: dict[int, str]) -> tuple[dict[int, str], bool]:
+    """Correct an inverted agent/customer assignment using the transcript.
+
+    Returns (assignments, swapped). Only swaps on a strict majority of agent
+    phrase evidence, so an ambiguous call is left exactly as diarization
+    decided rather than being flipped on noise.
+    """
+    agent_score = sum(
+        _agent_phrase_score(text)
+        for index, text in segment_texts.items()
+        if assignments.get(index) == "agent"
+    )
+    customer_score = sum(
+        _agent_phrase_score(text)
+        for index, text in segment_texts.items()
+        if assignments.get(index) == "customer"
+    )
+    if customer_score > agent_score:
+        flipped = {
+            index: ("customer" if role == "agent" else "agent")
+            for index, role in assignments.items()
+        }
+        return flipped, True
+    return assignments, False

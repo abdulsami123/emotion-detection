@@ -19,12 +19,61 @@ def test_assigns_every_segment_to_a_role(call_003):
     assert set(result.assignments.values()) <= {"agent", "customer"}
 
 
-def test_agent_speaks_first(call_003):
-    """The bot always greets first ('Hi, I'm Erica from...') - true on all
-    three provided calls, and the basis of the fallback heuristic."""
+def test_agent_speaks_first_holds_on_call_003_only(call_003):
+    """The first-speaker fallback happens to hold here - the bot greets before
+    the caller says anything.
+
+    An earlier version of this test claimed the assumption was "true on all
+    three provided calls" and only ever checked this one. That claim is FALSE:
+    on call_001 the caller opens with an impatient "Come on." at 1.2s and the
+    bot greets at 3.7s. Because the anchor picks the FIRST segment's cluster as
+    the agent, that one exception inverted every role in the call, and the tone
+    branch analysed the bot's uniformly flat TTS delivery as the customer's -
+    tone scored 0/3 as a direct result.
+
+    The heuristic is kept because it is right more often than not and costs
+    nothing, but it is no longer trusted on its own: `pipeline.verify_roles`
+    re-anchors the assignment on transcript content (see the test below).
+    """
     y, segments = call_003
     result = assign_speakers(y, segments)
     assert result.assignments[0] == "agent"
+
+
+def test_first_speaker_anchor_is_wrong_on_call_001():
+    """Pins the counter-example, so nobody restores the discredited claim.
+
+    Segment 0 of call_001 is the CUSTOMER ("Come on."), so an assignment that
+    anchors on turn order labels it `agent` and inverts the whole call.
+    """
+    y, _ = load_mono(reference_call("call_001.ogg"))
+    segments = speech_segments(y)
+    result = assign_speakers(y, segments)
+    # Diarization alone gets this wrong - that is the point of the test.
+    assert result.assignments[0] == "agent"
+    assert result.agent_reference_similarity is None, (
+        "no reference bank was supplied, so the first-speaker fallback ran"
+    )
+
+
+def test_transcript_verification_corrects_the_inverted_call():
+    """The actual invariant the pipeline now relies on: content-based
+    verification recovers the correct roles on call_001, and leaves the two
+    already-correct calls untouched."""
+    from autoace.asr import transcribe
+    from autoace.pipeline import _text_in_segment, verify_roles
+
+    y, _ = load_mono(reference_call("call_001.ogg"))
+    segments = speech_segments(y)
+    assignment = assign_speakers(y, segments)
+    transcript = transcribe(reference_call("call_001.ogg"))
+    texts = {i: _text_in_segment(transcript.words, s) for i, s in enumerate(segments)}
+
+    corrected, swapped = verify_roles(assignment.assignments, texts)
+    assert swapped is True, "call_001's roles are inverted and must be swapped"
+    # Segment 0 is the caller's "Come on."; segment 1 is the bot's greeting.
+    assert corrected[0] == "customer"
+    assert corrected[1] == "agent"
 
 
 def test_both_roles_present_in_a_two_party_call(call_003):

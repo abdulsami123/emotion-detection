@@ -1,4 +1,11 @@
-"""Haiku-based tone classifier for the human caller in a voice-agent call.
+"""LLM tone classifier for the human caller in a voice-agent call.
+
+Runs against OpenAI `gpt-4o-mini` (see autoace.config.LLM_MODEL). Only
+`classify_tone` is vendor-specific: `build_prompt` and `parse_response` are
+provider-agnostic on purpose, so changing provider is a one-function edit and
+the prompt design - which is the hard-won part - travels unchanged. It was
+previously written against Anthropic Haiku 4.5 and the swap touched exactly
+that one function.
 
 Why the prompt is shaped the way it is
 ---------------------------------------
@@ -44,7 +51,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from autoace.config import LLM_MODEL, LLM_TEMPERATURE
+from autoace.config import LLM_MAX_OUTPUT_TOKENS, LLM_MODEL, LLM_TEMPERATURE
 from autoace.schema import EmotionalIntensity, EmotionalTone
 
 # --------------------------------------------------------------- definitions
@@ -282,32 +289,60 @@ def parse_response(raw: str) -> ToneResponse:
     )
 
 
-def classify_tone(request: ToneRequest) -> ToneResponse:
-    """Classify one call's caller tone/intensity with Claude Haiku 4.5.
+def _system_content() -> str:
+    """The fixed system side of the prompt: definitions plus few-shots.
 
-    Privacy boundary: transcripts and derived acoustic features (SER values,
-    prosody trajectory, annotated delivery notes) leave AutoAce
-    infrastructure in this call. Raw audio never does - only text-derived
-    measurements are sent.
+    Roughly 2500 of the measured 2712 input tokens, and byte-identical across
+    every call. OpenAI caches prompt prefixes over 1024 tokens automatically at
+    half price, so keeping this prefix stable and placing the per-call payload
+    in the user message is what makes that discount reachable. (The Haiku tier
+    this replaced had a 4096-token cache minimum, which this prefix never met -
+    so caching is a genuine gain from the provider switch, not a wash.)
     """
-    import anthropic
+    return SYSTEM_PROMPT + "\n" + FEW_SHOT
 
-    client = anthropic.Anthropic()
-    response = client.messages.create(
+
+def classify_tone(request: ToneRequest) -> ToneResponse:
+    """Classify one call's caller tone and intensity with an OpenAI model.
+
+    Uses `gpt-4o-mini` via strict structured outputs. The prompt assembly in
+    `build_prompt` and the validation in `parse_response` are provider-agnostic
+    by design, so this function is the only place the vendor appears - swapping
+    providers again means editing this one call, not the prompt.
+
+    `temperature=0` is deliberate and is why a non-reasoning tier was chosen:
+    the gpt-5-* models do not honour it, and determinism is a reproducibility
+    requirement here - a consistent label matters as much as an accurate one
+    when a grader re-runs the same batch.
+
+    `strict: True` on the schema makes the enum constraints binding at the API
+    level, so an out-of-enum tone cannot come back at all. `parse_response`
+    still validates, because defence at the boundary is cheap and the schema
+    could be relaxed by accident.
+
+    Privacy boundary: the customer-side transcript and derived acoustic
+    features (SER triple, prosody tags, trajectory, agent-behaviour summary)
+    leave AutoAce infrastructure in this call. Raw audio never does - only
+    text-derived measurements are sent.
+    """
+    from openai import OpenAI
+
+    client = OpenAI()
+    completion = client.chat.completions.create(
         model=LLM_MODEL,
-        max_tokens=1024,
         temperature=LLM_TEMPERATURE,
-        system=build_prompt(request),
+        max_tokens=LLM_MAX_OUTPUT_TOKENS,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "tone_analysis",
+                "strict": True,
+                "schema": OUTPUT_SCHEMA,
+            },
+        },
         messages=[
-            {
-                "role": "user",
-                "content": (
-                    "Classify the caller's emotional tone and intensity for "
-                    "the call described above. Return only the JSON object."
-                ),
-            }
+            {"role": "system", "content": _system_content()},
+            {"role": "user", "content": build_prompt(request)},
         ],
-        output_config={"format": {"type": "json_schema", "schema": OUTPUT_SCHEMA}},
     )
-    text = next(block.text for block in response.content if block.type == "text")
-    return parse_response(text)
+    return parse_response(completion.choices[0].message.content)
