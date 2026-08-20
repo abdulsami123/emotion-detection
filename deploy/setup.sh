@@ -153,9 +153,13 @@ sudo cp "$REPO_DIR/deploy/Caddyfile" /etc/caddy/Caddyfile
 
 log "Passing AUTOACE_HOSTNAME to Caddy via a systemd drop-in"
 sudo mkdir -p /etc/systemd/system/caddy.service.d
+# Only the hostname, NOT EnvironmentFile=/etc/autoace.env. Caddy needs one
+# variable; handing it the whole file would put OPENAI_API_KEY,
+# AUTOACE_PASSWORD and DUCKDNS_TOKEN into the environment of a process that
+# has no use for any of them. The hostname itself is public.
 sudo tee /etc/systemd/system/caddy.service.d/override.conf >/dev/null <<DROPINEOF
 [Service]
-EnvironmentFile=$ENV_FILE
+Environment=AUTOACE_HOSTNAME=${AUTOACE_HOSTNAME}
 DROPINEOF
 
 # ---------------------------------------------------------------- model warm-up
