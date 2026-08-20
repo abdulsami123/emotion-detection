@@ -112,3 +112,112 @@ def test_app_builds_without_launching():
     from autoace.app import build_app
 
     assert build_app() is not None
+
+
+def _reload_modules(monkeypatch, tmp_path):
+    """Point the job store at a tmp dir and reload, since config.DATA_DIR is
+    read at import time. Returns (app_module, jobs_module)."""
+    import importlib
+
+    monkeypatch.setenv("AUTOACE_DATA_DIR", str(tmp_path / "data"))
+
+    from autoace import app as app_module
+    from autoace import config as config_module
+    from autoace import jobs as jobs_module
+
+    importlib.reload(config_module)
+    importlib.reload(jobs_module)
+    importlib.reload(app_module)
+    return app_module, jobs_module
+
+
+def test_enqueue_batch_creates_a_job_without_running_inference(tmp_path, monkeypatch):
+    """Enqueue must return immediately. A 50-file batch takes ~87 minutes; no
+    HTTP request survives that, which is the entire reason for the job queue."""
+    app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    (batch / "a.ogg").write_bytes(b"stub")
+    (batch / "manifest.csv").write_text("name,result_json\na.ogg,\n", encoding="utf-8")
+
+    def explode(path):
+        raise AssertionError("enqueue must not run inference")
+
+    monkeypatch.setattr(app_module, "analyse_file", explode, raising=False)
+
+    job_id, status = app_module.enqueue_batch(str(batch))
+
+    assert job_id
+    conn = jobs_module.connect()
+    try:
+        st = jobs_module.job_status(conn, job_id)
+        assert st.total == 1
+        assert st.pending == 1
+        assert st.status == "pending"
+    finally:
+        conn.close()
+
+
+def test_enqueue_batch_reports_the_job_id_in_its_status(tmp_path, monkeypatch):
+    """The evaluator must be told the ID, or they cannot come back to an
+    ~87-minute batch after closing the page."""
+    app_module, _ = _reload_modules(monkeypatch, tmp_path)
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    (batch / "a.ogg").write_bytes(b"stub")
+    (batch / "m.csv").write_text("name,result_json\na.ogg,\n", encoding="utf-8")
+
+    job_id, status = app_module.enqueue_batch(str(batch))
+    assert job_id in status
+
+
+def test_enqueue_batch_records_a_validation_failure_as_a_failed_job(tmp_path, monkeypatch):
+    """A batch with no manifest must produce a job row carrying the reason, so
+    a job-ID lookup can still explain it after a reload."""
+    app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    (batch / "a.ogg").write_bytes(b"stub")
+
+    job_id, status = app_module.enqueue_batch(str(batch))
+
+    assert job_id
+    assert "manifest" in status.lower()
+
+    conn = jobs_module.connect()
+    try:
+        st = jobs_module.job_status(conn, job_id)
+        assert st.status == "failed"
+        assert st.total == 0
+    finally:
+        conn.close()
+
+
+def test_enqueue_batch_with_no_upload_returns_no_job(tmp_path, monkeypatch):
+    app_module, _ = _reload_modules(monkeypatch, tmp_path)
+    job_id, status = app_module.enqueue_batch(None)
+    assert job_id == ""
+    assert status
+
+
+def test_enqueue_batch_warns_about_unmatched_files_but_still_queues(tmp_path, monkeypatch):
+    """The brief requires unmatched files to be reported rather than silently
+    skipped - and reported BEFORE processing, not discovered later."""
+    app_module, _ = _reload_modules(monkeypatch, tmp_path)
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    (batch / "a.ogg").write_bytes(b"stub")
+    (batch / "orphan.ogg").write_bytes(b"stub")
+    (batch / "m.csv").write_text(
+        "name,result_json\na.ogg,\nmissing.ogg,\n", encoding="utf-8"
+    )
+
+    job_id, status = app_module.enqueue_batch(str(batch))
+
+    assert job_id
+    assert "missing.ogg" in status, "a manifest row with no audio must be named"
+    assert "orphan.ogg" in status, "audio with no manifest row must be named"

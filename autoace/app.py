@@ -33,7 +33,8 @@ from pathlib import Path
 
 import gradio as gr
 
-from autoace.config import REVIEW_THRESHOLD
+from autoace import jobs
+from autoace.config import MAX_UPLOAD_MB, REVIEW_THRESHOLD, UI_POLL_SECONDS
 from autoace.eval import load_manifest, score_batch
 from autoace.io_audio import SUPPORTED_SUFFIXES
 from autoace.pipeline import FileResult, analyse_file
@@ -240,17 +241,13 @@ def _prepare_workdir(upload) -> Path:
     return path.parent
 
 
-def run_batch(upload, progress: gr.Progress = gr.Progress()):
-    """Validate, then process each matched file in its own try/except so a
-    malformed file cannot end the batch. Returns (csv_path, json_path,
-    table_rows, status_text, scoring_text) for the UI to render."""
-    empty = (None, None, [], "", "")
-    if upload is None:
-        return (None, None, [], "No file uploaded.", "")
+def _describe_validation(workdir: Path, validation: BatchValidation) -> list[str]:
+    """Human-readable problems found before any inference runs.
 
-    workdir = _prepare_workdir(upload)
-    validation = validate_batch(workdir)
-
+    Extracted from the old `run_batch` unchanged in substance: the brief
+    requires unmatched files to be reported rather than silently skipped, and
+    that has to happen at enqueue time, not when the worker gets there.
+    """
     problems: list[str] = []
     if validation.manifest_path is None:
         problems.append("No CSV manifest found in the upload.")
@@ -269,60 +266,74 @@ def run_batch(upload, progress: gr.Progress = gr.Progress()):
         problems.append(
             "Unsupported file formats (ignored): " + ", ".join(unsupported)
         )
+    return problems
 
-    if not validation.matched:
-        status = "Validation failed - nothing to process.\n" + "\n".join(
-            f"- {p}" for p in problems
-        )
-        return (None, None, [], status, "")
 
-    audio_by_name: dict[str, Path] = {}
-    for path in _iter_audio_files(workdir):
-        audio_by_name.setdefault(path.name, path)
+def enqueue_batch(upload) -> tuple[str, str]:
+    """Validate the upload and queue it. Returns `(job_id, status_markdown)`.
 
-    results: list[FileResult] = []
-    to_process = list(validation.matched)
-    for name in progress.tqdm(to_process, desc="Analysing calls"):
-        path = audio_by_name[name]
-        try:
-            result = analyse_file(str(path))
-        except Exception as exc:  # noqa: BLE001 - failure isolation, per file
-            result = FileResult(
-                name=name, analysis=None, error=f"unexpected failure: {exc}"
+    Returns as soon as the rows are written - the worker does the work. An
+    empty `job_id` means nothing was queued and there is nothing to poll.
+    """
+    if upload is None:
+        return "", "No file uploaded."
+
+    workdir = _prepare_workdir(upload)
+    validation = validate_batch(workdir)
+    problems = _describe_validation(workdir, validation)
+    validation_json = json.dumps(
+        {
+            "matched": validation.matched,
+            "missing_audio": validation.missing_audio,
+            "unlisted_audio": validation.unlisted_audio,
+            "problems": problems,
+        }
+    )
+
+    conn = jobs.connect()
+    try:
+        if not validation.matched:
+            reason = "Validation failed - nothing to process.\n" + "\n".join(
+                f"- {p}" for p in problems
             )
-        results.append(result)
+            job_id = jobs.enqueue_failed(
+                conn, workdir=workdir, validation_json=validation_json, error=reason
+            )
+            return job_id, reason
 
-    csv_text = results_to_csv(results)
-    json_text = results_to_json(results)
+        audio_by_name: dict[str, Path] = {}
+        for path in _iter_audio_files(workdir):
+            audio_by_name.setdefault(path.name, path)
+        matched_audio = {name: audio_by_name[name] for name in validation.matched}
 
-    out_dir = Path(tempfile.mkdtemp(prefix="autoace_out_"))
-    csv_path = out_dir / "results.csv"
-    json_path = out_dir / "results.json"
-    csv_path.write_text(csv_text, encoding="utf-8")
-    json_path.write_text(json_text, encoding="utf-8")
+        manifest_labelled = False
+        if validation.manifest_path is not None:
+            manifest_labelled = any(
+                row.expected is not None
+                for row in load_manifest(str(validation.manifest_path))
+            )
 
-    table = results_to_table(results)
+        job_id = jobs.enqueue(
+            conn,
+            workdir=workdir,
+            audio_by_name=matched_audio,
+            validation_json=validation_json,
+            manifest_labelled=manifest_labelled,
+        )
+    finally:
+        conn.close()
 
-    n_errors = sum(1 for r in results if r.error)
-    n_flagged = sum(1 for r in results if r.review_flagged)
-    status_lines = [
-        f"Processed {len(results)} of {len(validation.matched)} matched files.",
-        f"{n_errors} failed, {n_flagged} flagged for review.",
+    lines = [
+        f"**Queued {len(matched_audio)} file(s).** Job ID: `{job_id}`",
+        "",
+        "Keep this job ID. You can close the page and paste it into the "
+        "**Look up a job** box to come back to these results.",
     ]
     if problems:
-        status_lines.append("Validation warnings:")
-        status_lines.extend(f"- {p}" for p in problems)
-    status = "\n".join(status_lines)
-
-    scoring_text = ""
-    if validation.manifest_path is not None:
-        manifest_rows = load_manifest(str(validation.manifest_path))
-        if any(row.expected is not None for row in manifest_rows):
-            predictions = {r.name: r.analysis for r in results if r.analysis is not None}
-            metrics = score_batch(manifest_rows, predictions)
-            scoring_text = json.dumps(metrics, indent=2, default=str)
-
-    return str(csv_path), str(json_path), table, status, scoring_text
+        lines.append("")
+        lines.append("Validation warnings:")
+        lines.extend(f"- {p}" for p in problems)
+    return job_id, "\n".join(lines)
 
 
 def build_app() -> gr.Blocks:
@@ -357,10 +368,14 @@ def build_app() -> gr.Blocks:
             interactive=False,
         )
 
+        # Minimal wiring so construction stays valid now that run_batch is
+        # gone. This mapping is wrong (enqueue_batch returns (job_id, status),
+        # not the five outputs below) - Task 15 rewires the Blocks UI for the
+        # async job queue properly.
         run_button.click(
-            fn=run_batch,
+            fn=enqueue_batch,
             inputs=[upload],
-            outputs=[csv_out, json_out, table, status, scoring],
+            outputs=[status, status],
         )
 
     return demo
