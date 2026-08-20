@@ -1,0 +1,18 @@
+{$AUTOACE_HOSTNAME} {
+	encode gzip
+
+	# 50 files at the largest provided call (2.8 MB) is ~140 MB; 500 MB
+	# matches MAX_UPLOAD_MB in autoace/config.py.
+	request_body {
+		max_size 500MB
+	}
+
+	# Processing happens in the worker, not in a request, so these only need to
+	# cover an upload and a poll - but a slow uplink pushing 140 MB needs room.
+	reverse_proxy 127.0.0.1:7860 {
+		transport http {
+			read_timeout 600s
+			write_timeout 600s
+		}
+	}
+}

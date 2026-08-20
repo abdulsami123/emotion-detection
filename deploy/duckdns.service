@@ -1,0 +1,9 @@
+[Unit]
+Description=Update DuckDNS A record for this instance
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/autoace.env
+ExecStart=/opt/autoace/repo/deploy/duckdns.sh

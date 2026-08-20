@@ -1,0 +1,25 @@
+[Unit]
+Description=AutoAce dashboard (worker)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/autoace/repo
+EnvironmentFile=/etc/autoace.env
+Environment=AUTOACE_DATA_DIR=/opt/autoace/data
+Environment=HF_HOME=/opt/autoace/hf
+# The shape is 2 OCPU (VM.Standard.A1.Flex). Letting BLAS/OpenMP thread pools
+# default to auto-detected core counts (or worse, oversubscribe) causes
+# contention rather than speedup on only 2 cores, so both are pinned to match.
+Environment=OMP_NUM_THREADS=2
+Environment=MKL_NUM_THREADS=2
+ExecStart=/opt/autoace/venv/bin/python -m autoace.worker
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

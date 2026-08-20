@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically update the DuckDNS A record for this instance
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=15min
+Unit=duckdns.service
+
+[Install]
+WantedBy=timers.target
