@@ -7,6 +7,8 @@ import sqlite3
 import pytest
 
 from autoace import jobs
+from autoace.pipeline import FileResult
+from autoace.schema import CallAnalysis
 
 
 @pytest.fixture
@@ -214,3 +216,122 @@ def test_claim_marks_the_job_running(conn, tmp_path):
     assert conn.execute(
         "SELECT status FROM jobs WHERE job_id=?", (job_id,)
     ).fetchone()["status"] == "running"
+
+
+def _analysis(**overrides) -> CallAnalysis:
+    """A schema-valid analysis. Field values are irrelevant to the store; it
+    round-trips JSON and never inspects the contents."""
+    data = {
+        "emotional_tone": "neutral",
+        "emotional_intensity": "medium",
+        "background_noise_present": False,
+        "background_noise_type": "none",
+        "background_noise_severity": "none",
+        "audio_quality": "clear",
+        "speaker_overlap_present": False,
+        "long_silence_present": False,
+        "confidence": 0.8,
+    }
+    data.update(overrides)
+    return CallAnalysis.model_validate(data)
+
+
+def test_complete_records_result_and_unlinks_audio(conn, tmp_path):
+    """Audio is deleted as soon as its row is recorded, not at end of job.
+    Confidential audio must live on disk only while it is being processed."""
+    workdir, paths = _make_audio(tmp_path, "a.ogg", "b.ogg")
+    job_id = jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+    claimed = jobs.claim_next(conn)
+
+    jobs.complete(
+        conn,
+        claimed,
+        FileResult(
+            name=claimed.name,
+            analysis=_analysis(confidence=0.42),
+            reasoning="nli fallback",
+            review_flagged=True,
+        ),
+    )
+
+    row = conn.execute(
+        "SELECT * FROM files WHERE job_id=? AND name=?", (job_id, claimed.name)
+    ).fetchone()
+    assert row["status"] == "done"
+    assert row["audio_path"] is None
+    assert row["reasoning"] == "nli fallback"
+    assert row["review_flagged"] == 1
+    assert row["finished_at"] is not None
+    assert not (workdir / claimed.name).exists(), "audio must be unlinked"
+    assert (workdir / "b.ogg").exists(), "other files must be untouched"
+
+
+def test_completing_a_file_that_analyse_file_failed_still_records_a_row(conn, tmp_path):
+    """analyse_file returns FileResult(error=...) rather than raising. That is
+    a completed unit of work with a failure recorded - not a retry."""
+    workdir, paths = _make_audio(tmp_path, "a.ogg")
+    job_id = jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+    claimed = jobs.claim_next(conn)
+
+    jobs.complete(
+        conn, claimed,
+        FileResult(name="a.ogg", analysis=None, error="could not decode"),
+    )
+
+    row = conn.execute(
+        "SELECT status, error, result_json FROM files WHERE job_id=? AND name=?",
+        (job_id, "a.ogg"),
+    ).fetchone()
+    assert row["status"] == "failed"
+    assert row["error"] == "could not decode"
+    assert row["result_json"] is None
+
+
+def test_job_completes_and_workdir_is_removed_when_last_file_finishes(conn, tmp_path):
+    """A finished job must release its staged audio directory, or an abandoned
+    upload would leave confidential audio on the volume."""
+    workdir, paths = _make_audio(tmp_path, "a.ogg", "b.ogg")
+    job_id = jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+
+    first = jobs.claim_next(conn)
+    jobs.complete(conn, first, FileResult(name=first.name, analysis=_analysis()))
+    assert conn.execute(
+        "SELECT status FROM jobs WHERE job_id=?", (job_id,)
+    ).fetchone()["status"] == "running", "one file left, job is not done"
+
+    second = jobs.claim_next(conn)
+    jobs.complete(conn, second, FileResult(name=second.name, analysis=_analysis()))
+
+    assert conn.execute(
+        "SELECT status FROM jobs WHERE job_id=?", (job_id,)
+    ).fetchone()["status"] == "complete"
+    assert not workdir.exists(), "workdir must be removed once the job is done"
+
+
+def test_fail_marks_the_row_failed_and_unlinks(conn, tmp_path):
+    """Giving up on a file permanently must still release its audio."""
+    workdir, paths = _make_audio(tmp_path, "a.ogg")
+    job_id = jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+    claimed = jobs.claim_next(conn)
+
+    jobs.fail(conn, claimed, "retries exhausted")
+
+    row = conn.execute(
+        "SELECT status, error, audio_path FROM files WHERE job_id=? AND name=?",
+        (job_id, "a.ogg"),
+    ).fetchone()
+    assert row["status"] == "failed"
+    assert row["error"] == "retries exhausted"
+    assert row["audio_path"] is None

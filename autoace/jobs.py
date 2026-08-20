@@ -12,6 +12,7 @@ different executor (a durable workflow engine, a second machine) could replace
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 import time
 import uuid
@@ -215,3 +216,80 @@ def claim_next(conn: sqlite3.Connection) -> ClaimedFile | None:
         audio_path=row["audio_path"],
         attempts=attempts,
     )
+
+
+def _unlink_audio(conn: sqlite3.Connection, job_id: str, name: str) -> None:
+    """Delete the staged audio and clear its path.
+
+    Missing-file errors are swallowed: a retry after a crash may find the
+    audio already gone, and that is success, not a problem to report.
+    """
+    row = conn.execute(
+        "SELECT audio_path FROM files WHERE job_id=? AND name=?", (job_id, name)
+    ).fetchone()
+    if row is not None and row["audio_path"]:
+        Path(row["audio_path"]).unlink(missing_ok=True)
+    conn.execute(
+        "UPDATE files SET audio_path=NULL WHERE job_id=? AND name=?", (job_id, name)
+    )
+
+
+def _finalise_if_done(conn: sqlite3.Connection, job_id: str) -> None:
+    """Mark the job complete and remove its workdir once no file is left to
+    process. Called from both complete() and fail() so either path can be the
+    one that finishes the job."""
+    outstanding = conn.execute(
+        "SELECT COUNT(*) FROM files WHERE job_id=? AND status IN ('pending','running')",
+        (job_id,),
+    ).fetchone()[0]
+    if outstanding:
+        return
+
+    conn.execute("UPDATE jobs SET status='complete' WHERE job_id=?", (job_id,))
+    row = conn.execute(
+        "SELECT workdir FROM jobs WHERE job_id=?", (job_id,)
+    ).fetchone()
+    if row is not None and row["workdir"]:
+        shutil.rmtree(row["workdir"], ignore_errors=True)
+
+
+def complete(
+    conn: sqlite3.Connection, claimed: ClaimedFile, result: "FileResult"
+) -> None:
+    """Record a finished unit of work.
+
+    `analyse_file` returning `FileResult(error=...)` is a COMPLETED unit with a
+    failure recorded, so the row goes to `failed` - not back to `pending`. Only
+    an exception or a killed process earns a retry (see `reconcile`).
+    """
+    status = "done" if result.analysis is not None else "failed"
+    result_json = (
+        result.analysis.model_dump_json() if result.analysis is not None else None
+    )
+    conn.execute(
+        "UPDATE files SET status=?, result_json=?, reasoning=?, review_flagged=?,"
+        " error=?, finished_at=? WHERE job_id=? AND name=?",
+        (
+            status,
+            result_json,
+            result.reasoning,
+            int(bool(result.review_flagged)),
+            result.error,
+            _now(),
+            claimed.job_id,
+            claimed.name,
+        ),
+    )
+    _unlink_audio(conn, claimed.job_id, claimed.name)
+    _finalise_if_done(conn, claimed.job_id)
+
+
+def fail(conn: sqlite3.Connection, claimed: ClaimedFile, error: str) -> None:
+    """Give up on a file permanently."""
+    conn.execute(
+        "UPDATE files SET status='failed', error=?, finished_at=?"
+        " WHERE job_id=? AND name=?",
+        (error, _now(), claimed.job_id, claimed.name),
+    )
+    _unlink_audio(conn, claimed.job_id, claimed.name)
+    _finalise_if_done(conn, claimed.job_id)
