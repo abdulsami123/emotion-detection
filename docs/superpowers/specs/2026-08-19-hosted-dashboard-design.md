@@ -353,15 +353,35 @@ systemd is less work, less memory, and faster to iterate. This also drops the ea
 "models baked into the image" question entirely — `HF_HOME` on the boot volume downloads once and
 persists across restarts and code deploys.
 
-### 8.3 Cloudflare Tunnel instead of open ports
+### 8.3 TLS: Caddy plus a DuckDNS hostname
 
-`cloudflared` makes an **outbound** connection from the VM, so there is no listening port to
-expose. This removes the two most error-prone Oracle steps: a VCN ingress rule *and* an iptables
-rule, since Oracle's Ubuntu images ship netfilter rules that block everything but SSH. It also
-removes certificate management — TLS terminates at Cloudflare.
+No domain is purchased. Caddy runs on the VM, terminates TLS, and reverse-proxies to Gradio on
+`127.0.0.1:7860`, obtaining a real Let's Encrypt certificate for a free
+`autoace-<suffix>.duckdns.org` hostname pointed at the instance's public IP.
+
+**DuckDNS specifically, not `nip.io` or `sslip.io`.** All three are free wildcard-DNS services
+that avoid buying a domain, but Let's Encrypt scopes its "certificates per registered domain"
+rate limit (50/week) using the Public Suffix List, and this was verified against the live list:
+
+| Host | On the Public Suffix List |
+|---|---|
+| `nip.io` | **No** |
+| `sslip.io` | **No** |
+| `duckdns.org` | **Yes** |
+
+Because `nip.io` is absent from the PSL, every `*.nip.io` certificate in existence shares one
+quota, which is chronically exhausted — issuance for `<ip>.nip.io` fails with "too many
+certificates already issued". `duckdns.org` being present means each `<name>.duckdns.org` is
+treated as its own registered domain with its own quota. This is a correctness difference, not a
+preference.
 
 Gradio's `share=True` is **not** used: those tunnels expire and the URL must stay valid through
 the evaluation period.
+
+**Cost:** two Oracle steps that a tunnel would have avoided — a VCN ingress rule for 80/443 and a
+matching `iptables` rule, because Oracle's Ubuntu images ship netfilter rules that drop
+everything except SSH. Port 80 must stay open for the ACME HTTP-01 challenge and renewals, not
+only for the initial issuance.
 
 ### 8.4 Layout and units
 
@@ -378,8 +398,12 @@ the evaluation period.
 ```
 autoace-web.service        Restart=always  EnvironmentFile=/etc/autoace.env
 autoace-worker.service     Restart=always  EnvironmentFile=/etc/autoace.env
-cloudflared.service
+caddy.service              distro package; /etc/caddy/Caddyfile
+duckdns.timer              refreshes the A record if the public IP changes
 ```
+
+Gradio binds `127.0.0.1:7860`, not `0.0.0.0` — Caddy is the only listener reachable from off-box,
+so the app cannot be reached over plaintext HTTP even if a firewall rule is wrong.
 
 A **4 GiB swapfile** is provisioned as insurance for the transient peak (5.67 GiB peak vs 3.91
 GiB steady). Swapping is slow, but slow beats an OOM kill, and §7.4 covers the case where it is
@@ -395,9 +419,16 @@ image.
 
 Brief §5 requires that production call audio not go to unapproved public services. A VM under our
 control is a stronger position than any managed platform: the audio is unlinked per file, results
-carry no audio, and nothing transits a third-party ML host. Cloudflare terminates TLS and so sees
-request plaintext, which is the one third party in the path and must be stated plainly in the
-memo.
+carry no audio, and nothing transits a third-party ML host.
+
+**No third party sees plaintext.** TLS terminates in Caddy on our own VM. DuckDNS provides only
+DNS resolution — no traffic passes through it — and Let's Encrypt sees only certificate requests.
+This is a materially better §5 position than the managed-platform options, all of which terminate
+TLS on someone else's edge, and it is worth stating in the memo as a deliberate choice rather
+than a side effect.
+
+The one genuine external dependency remains OpenAI, which receives the annotated transcript (not
+audio) for the tone branch. That was already disclosed in the pipeline spec and is unchanged.
 
 ---
 
@@ -466,7 +497,8 @@ than leaving it to look like thin coverage.
 | 4 | Oracle ARM `Out of host capacity` can block provisioning entirely | Mitigated by requesting 2 OCPU; no in-repo fix |
 | 5 | A file that OOMs twice is reported `failed`, not analysed | Accepted (§7.4); the alternative is a crash loop |
 | 6 | Swap can mask memory pressure as latency | Accepted; journald records the worker's RSS per file |
-| 7 | Cloudflare is in the TLS path | Disclosed in the memo (§8.6) |
+| 7 | DuckDNS is a third-party DNS dependency: if it stops resolving, the hostname breaks | Accepted — DNS only, no traffic path (§8.6). The public IP keeps working and the cert stays valid |
+| 10 | Oracle public IPs are ephemeral unless reserved, and a change breaks both DNS and TLS | Mitigated by reserving the IP at create time plus a `duckdns.timer` refresh |
 | 8 | Results are lost if the boot volume is lost — no backups | Deliberate: results are reproducible, audio should not persist |
 | 9 | Model weight cache size (~5 GiB) never isolated from a shared 60 GiB HF cache | Verify at warm-up |
 
@@ -479,7 +511,8 @@ than leaving it to look like thin coverage.
 3. Refactor `app.py`: `enqueue_batch`, `poll_job`, `gr.Timer`, job-ID lookup. Existing 8 tests
    must stay green.
 4. Worker integration test over one real call.
-5. Deploy artifacts: `deploy/setup.sh`, both systemd units, `cloudflared` config, README section.
+5. Deploy artifacts: `deploy/setup.sh`, both systemd units, `Caddyfile`, DuckDNS refresh timer,
+   README section.
 6. Provision the VM, run the suite there, **re-measure peak RSS on ARM** (§11.2), warm the cache.
 7. Rotate the OpenAI key, set `/etc/autoace.env`, measure the happy-path peak (§11.3).
 8. Update `docs/MEMO.md`: hosting, privacy, the CI limitation, and the measured numbers.
