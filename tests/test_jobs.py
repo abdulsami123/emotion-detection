@@ -571,3 +571,120 @@ def test_expire_leaves_live_jobs_alone(conn, tmp_path):
     assert jobs.expire(conn) == 0
     assert conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
     assert workdir.exists()
+
+
+def test_job_status_reports_counts_and_queue_position(conn, tmp_path):
+    """One worker means jobs are FIFO across users, so a second batch genuinely
+    waits. The panel must say so - a silent wait is the failure mode."""
+    workdir_a, paths_a = _make_audio(tmp_path / "a", "a1.ogg", "a2.ogg")
+    workdir_b, paths_b = _make_audio(tmp_path / "b", "b1.ogg")
+    job_a = jobs.enqueue(
+        conn, workdir=workdir_a, audio_by_name=paths_a,
+        validation_json="{}", manifest_labelled=True,
+    )
+    job_b = jobs.enqueue(
+        conn, workdir=workdir_b, audio_by_name=paths_b,
+        validation_json="{}", manifest_labelled=False,
+    )
+
+    claimed = jobs.claim_next(conn)
+    jobs.complete(conn, claimed, FileResult(name=claimed.name, analysis=_analysis()))
+
+    status_a = jobs.job_status(conn, job_a)
+    assert status_a.total == 2
+    assert status_a.done == 1
+    assert status_a.pending == 1
+    assert status_a.manifest_labelled is True
+    assert status_a.queue_position == 0, "job A is at the head of the queue"
+
+    status_b = jobs.job_status(conn, job_b)
+    assert status_b.queue_position == 1, "job B waits behind job A"
+    assert status_b.eta_seconds == pytest.approx(105.0 * 2, rel=0.01)
+
+
+def test_job_status_is_none_for_an_unknown_id(conn):
+    assert jobs.job_status(conn, "no-such-job") is None
+
+
+def test_job_status_finished_counts_done_and_failed(conn, tmp_path):
+    """`finished` drives the "N of M finished" line, so a failed file must
+    count as finished - otherwise a batch with one bad file never reaches M."""
+    workdir, paths = _make_audio(tmp_path, "a.ogg", "b.ogg")
+    job_id = jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+    first = jobs.claim_next(conn)
+    jobs.complete(conn, first, FileResult(name=first.name, analysis=_analysis()))
+    second = jobs.claim_next(conn)
+    jobs.complete(
+        conn, second,
+        FileResult(name=second.name, analysis=None, error="could not decode"),
+    )
+
+    status = jobs.job_status(conn, job_id)
+    assert (status.done, status.failed, status.finished) == (1, 1, 2)
+
+
+def test_job_results_rehydrate_losslessly(conn, tmp_path):
+    """FileResult has exactly five fields and each maps to one column, so the
+    round trip must be exact - that is what lets results_to_csv/json/table stay
+    completely unchanged."""
+    workdir, paths = _make_audio(tmp_path, "a.ogg", "b.ogg")
+    jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+
+    first = jobs.claim_next(conn)
+    original = FileResult(
+        name=first.name,
+        analysis=_analysis(emotional_tone="frustrated", confidence=0.51),
+        reasoning="nli fallback: openai unavailable",
+        review_flagged=True,
+    )
+    jobs.complete(conn, first, original)
+
+    second = jobs.claim_next(conn)
+    jobs.complete(
+        conn, second,
+        FileResult(name=second.name, analysis=None, error="could not decode"),
+    )
+
+    results = {r.name: r for r in jobs.job_results(conn, first.job_id)}
+    assert len(results) == 2
+
+    got = results[first.name]
+    assert got.name == original.name
+    assert got.analysis == original.analysis
+    assert got.reasoning == original.reasoning
+    assert got.review_flagged is True
+    assert got.error is None
+
+    failed = results[second.name]
+    assert failed.analysis is None
+    assert failed.error == "could not decode"
+
+
+def test_job_results_include_files_not_yet_processed(conn, tmp_path):
+    """A pending file must appear in the table as pending rather than vanish,
+    so a 50-row batch shows 50 rows from the moment it is enqueued."""
+    workdir, paths = _make_audio(tmp_path, "a.ogg")
+    job_id = jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+    results = jobs.job_results(conn, job_id)
+    assert [r.name for r in results] == ["a.ogg"]
+    assert results[0].analysis is None
+    assert results[0].error is None, "pending is not an error"
+
+
+def test_job_results_preserve_enqueue_order(conn, tmp_path):
+    """Exports must be stable and predictable for an evaluator diffing runs."""
+    workdir, paths = _make_audio(tmp_path, "z.ogg", "a.ogg", "m.ogg")
+    job_id = jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+    assert [r.name for r in jobs.job_results(conn, job_id)] == list(paths)

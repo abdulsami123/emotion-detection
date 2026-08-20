@@ -26,6 +26,7 @@ from autoace.config import (
     JOBS_DB,
     JOB_TTL_SECONDS,
     MAX_ATTEMPTS,
+    MEAN_SECONDS_PER_FILE,
     STALE_RUNNING_SECONDS,
 )
 
@@ -472,3 +473,108 @@ def expire(conn: sqlite3.Connection, now: float | None = None) -> int:
         _remove_workdir(row["workdir"])
 
     return len(rows)
+
+
+@dataclass(frozen=True)
+class JobStatus:
+    job_id: str
+    status: str
+    total: int
+    done: int
+    failed: int
+    running: int
+    pending: int
+    manifest_labelled: bool
+    validation_json: str
+    error: str | None
+    queue_position: int
+    eta_seconds: float
+
+    @property
+    def finished(self) -> int:
+        return self.done + self.failed
+
+
+def job_status(conn: sqlite3.Connection, job_id: str) -> JobStatus | None:
+    """Counts plus the queue position, for the status panel.
+
+    `queue_position` is how many OTHER unfinished jobs sit ahead in the FIFO,
+    and `eta_seconds` covers every unfinished file ahead of this job as well as
+    its own - one worker means a second batch genuinely waits, and a silent
+    wait is the failure mode this is here to avoid.
+    """
+    job = conn.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    if job is None:
+        return None
+
+    counts = {"done": 0, "failed": 0, "running": 0, "pending": 0}
+    for row in conn.execute(
+        "SELECT status, COUNT(*) AS n FROM files WHERE job_id=? GROUP BY status",
+        (job_id,),
+    ):
+        counts[row["status"]] = row["n"]
+
+    ahead_jobs = conn.execute(
+        "SELECT COUNT(*) FROM jobs WHERE created_at < ?"
+        " AND status IN ('pending','running')",
+        (job["created_at"],),
+    ).fetchone()[0]
+    ahead_files = conn.execute(
+        "SELECT COUNT(*) FROM files f JOIN jobs j ON j.job_id = f.job_id"
+        " WHERE f.status IN ('pending','running')"
+        "   AND (j.created_at < ? OR j.job_id = ?)",
+        (job["created_at"], job_id),
+    ).fetchone()[0]
+
+    return JobStatus(
+        job_id=job_id,
+        status=job["status"],
+        total=job["total_files"],
+        done=counts["done"],
+        failed=counts["failed"],
+        running=counts["running"],
+        pending=counts["pending"],
+        manifest_labelled=bool(job["manifest_labelled"]),
+        validation_json=job["validation_json"],
+        error=job["error"],
+        queue_position=ahead_jobs,
+        eta_seconds=ahead_files * MEAN_SECONDS_PER_FILE,
+    )
+
+
+def job_results(conn: sqlite3.Connection, job_id: str) -> list["FileResult"]:
+    """Rehydrate `FileResult` objects from the store, in enqueue order.
+
+    `FileResult` and `CallAnalysis` are imported lazily on purpose: pulling
+    `pipeline` in at module scope would drag torch into this module's import
+    graph and stop the job-store tests from running in CI, where the audio
+    fixtures are absent and the weights are ~5 GiB.
+
+    A pending file yields `analysis=None` with `error=None` - it must appear in
+    the table as not-yet-processed rather than vanish, so a 50-file batch shows
+    50 rows from the moment it is enqueued.
+    """
+    from autoace.pipeline import FileResult
+    from autoace.schema import CallAnalysis
+
+    results = []
+    for row in conn.execute(
+        "SELECT name, result_json, reasoning, review_flagged, error FROM files"
+        " WHERE job_id=? ORDER BY rowid",
+        (job_id,),
+    ):
+        analysis = (
+            CallAnalysis.model_validate_json(row["result_json"])
+            if row["result_json"]
+            else None
+        )
+        results.append(
+            FileResult(
+                name=row["name"],
+                analysis=analysis,
+                error=row["error"],
+                reasoning=row["reasoning"] or "",
+                review_flagged=bool(row["review_flagged"]),
+            )
+        )
+    return results
