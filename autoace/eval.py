@@ -28,17 +28,46 @@ class ManifestRow:
 def load_manifest(path: str) -> list[ManifestRow]:
     """Read the brief's CSV manifest.
 
-    An empty `result_json` cell means the row is unlabelled (audio provided,
-    no ground truth yet) - `expected` is None for those rows rather than
-    raising, so a partially-labelled batch can still be loaded.
+    An empty `result_json` cell - or an entirely absent `result_json` column -
+    means the row is unlabelled (audio provided, no ground truth yet), so
+    `expected` is None rather than raising. Brief section 7 allows exactly
+    that for an unlabeled hidden test set.
+
+    Opened as `utf-8-sig` because a manifest saved from Excel carries a BOM,
+    which under plain `utf-8` turns the first fieldname into '﻿name' and
+    fails EVERY row lookup - taking down the whole batch before any inference
+    runs. The manifest is a single point of failure in a way one bad audio file
+    is not, so its errors name what went wrong and which row it was.
     """
     rows: list[ManifestRow] = []
-    with open(path, newline="", encoding="utf-8") as fh:
+    with open(path, newline="", encoding="utf-8-sig") as fh:
         reader = csv.DictReader(fh)
+        if reader.fieldnames is None:
+            raise ValueError(f"{path}: manifest is empty")
+        if "name" not in reader.fieldnames:
+            raise ValueError(
+                f"{path}: manifest has no 'name' column - found "
+                f"{reader.fieldnames}. The brief requires a 'name' column "
+                f"holding the exact audio filename."
+            )
+
         for record in reader:
+            name = (record.get("name") or "").strip()
+            if not name:
+                continue  # blank or trailing row
+
             raw = (record.get("result_json") or "").strip()
-            expected = CallAnalysis(**json.loads(raw)) if raw else None
-            rows.append(ManifestRow(name=record["name"], expected=expected))
+            if not raw:
+                rows.append(ManifestRow(name=name, expected=None))
+                continue
+
+            try:
+                expected = CallAnalysis(**json.loads(raw))
+            except Exception as exc:  # noqa: BLE001 - re-raised with context
+                raise ValueError(
+                    f"{path}: row '{name}' has an unreadable result_json: {exc}"
+                ) from exc
+            rows.append(ManifestRow(name=name, expected=expected))
     return rows
 
 
