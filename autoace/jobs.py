@@ -17,7 +17,12 @@ import time
 import uuid
 from pathlib import Path
 
-from autoace.config import JOB_TTL_SECONDS, JOBS_DB
+from autoace.config import (
+    JOBS_BUSY_TIMEOUT_MS,
+    JOBS_CONNECT_TIMEOUT_S,
+    JOBS_DB,
+    JOB_TTL_SECONDS,
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -61,10 +66,12 @@ def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
     """
     path = Path(db_path) if db_path is not None else JOBS_DB
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), isolation_level=None, timeout=30.0)
+    conn = sqlite3.connect(
+        str(path), isolation_level=None, timeout=JOBS_CONNECT_TIMEOUT_S
+    )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute(f"PRAGMA busy_timeout={JOBS_BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(_SCHEMA)
     return conn
@@ -91,6 +98,10 @@ def enqueue(
     """
     job_id = str(uuid.uuid4())
     now = _now()
+    # Resolve to absolute paths before writing: the worker that later reads
+    # this row runs in a separate OS process (under systemd) with a possibly
+    # different working directory, so a relative path stored here would
+    # resolve against the wrong CWD there and silently miss the file.
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute(
@@ -103,14 +114,17 @@ def enqueue(
                 now + JOB_TTL_SECONDS,
                 len(audio_by_name),
                 int(manifest_labelled),
-                str(workdir),
+                str(Path(workdir).resolve()),
                 validation_json,
             ),
         )
         conn.executemany(
             "INSERT INTO files (job_id, name, status, audio_path)"
             " VALUES (?, ?, 'pending', ?)",
-            [(job_id, name, str(path)) for name, path in audio_by_name.items()],
+            [
+                (job_id, name, str(Path(path).resolve()))
+                for name, path in audio_by_name.items()
+            ],
         )
         conn.execute("COMMIT")
     except Exception:
@@ -134,10 +148,20 @@ def enqueue_failed(
     """
     job_id = str(uuid.uuid4())
     now = _now()
+    # Resolve for the same reason as in enqueue(): the worker is a separate
+    # process and may have a different CWD, so a relative workdir would be
+    # unresolvable there.
     conn.execute(
         "INSERT INTO jobs (job_id, status, created_at, expires_at, total_files,"
         " manifest_labelled, workdir, validation_json, error)"
         " VALUES (?, 'failed', ?, ?, 0, 0, ?, ?, ?)",
-        (job_id, now, now + JOB_TTL_SECONDS, str(workdir), validation_json, error),
+        (
+            job_id,
+            now,
+            now + JOB_TTL_SECONDS,
+            str(Path(workdir).resolve()),
+            validation_json,
+            error,
+        ),
     )
     return job_id

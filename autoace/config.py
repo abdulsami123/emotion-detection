@@ -235,3 +235,8 @@ MEAN_SECONDS_PER_FILE = 105.0     # MEASURED — mean of the three provided call
                                   # (58.2/58.7/129.8s) x the 1.18 two-thread penalty
 MAX_UPLOAD_MB = 500               # DERIVED — 50 files at the largest provided call
                                   # (2.8 MB) is ~140 MB; 500 MB is generous headroom
+JOBS_CONNECT_TIMEOUT_S = 30.0     # DERIVED — how long a writer waits for the WAL
+                                  # lock before raising. Generously above the
+                                  # longest single-row write.
+JOBS_BUSY_TIMEOUT_MS = 5000       # DERIVED — SQLite-level retry window for the
+                                  # same contention, in milliseconds.
