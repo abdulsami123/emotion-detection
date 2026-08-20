@@ -17,3 +17,4 @@ tests/fixtures/asr_baseline.json
 # local model cache and batch scratch
 models/
 _batches/
+_data/

@@ -6,6 +6,7 @@ Provenance of each value is marked:
   UNFITTED  — interpolated with no supporting example; highest risk
 """
 
+import os
 from pathlib import Path
 
 # ---------------------------------------------------------------- models
@@ -213,3 +214,24 @@ def reference_call(name: str) -> str:
     assume the audio sits in the working directory.
     """
     return str(REFERENCE_DIR / name)
+
+
+# ------------------------------------------------------- hosted dashboard
+# Job store and staged uploads. AUTOACE_DATA_DIR lets the tests point this at
+# a tmp_path and lets the VM point it at the boot volume.
+DATA_DIR = Path(os.environ.get("AUTOACE_DATA_DIR", REPO_ROOT / "_data"))
+JOBS_DB = DATA_DIR / "jobs.db"
+UPLOAD_DIR = DATA_DIR / "uploads"
+
+JOB_TTL_SECONDS = 7 * 24 * 3600   # DERIVED — results kept until download. Audio is
+                                  # unlinked per file regardless, so this governs
+                                  # metadata and results only.
+MAX_ATTEMPTS = 2                  # DERIVED — breaks the OOM crash loop. reconcile()
+                                  # alone would requeue an OOM-killed file forever.
+STALE_RUNNING_SECONDS = 900.0     # DERIVED — 5.6x the slowest measured file (160.8s)
+WORKER_POLL_SECONDS = 2.0
+UI_POLL_SECONDS = 5.0
+MEAN_SECONDS_PER_FILE = 105.0     # MEASURED — mean of the three provided calls
+                                  # (58.2/58.7/129.8s) x the 1.18 two-thread penalty
+MAX_UPLOAD_MB = 500               # DERIVED — 50 files at the largest provided call
+                                  # (2.8 MB) is ~140 MB; 500 MB is generous headroom
