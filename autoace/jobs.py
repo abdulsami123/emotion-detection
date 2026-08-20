@@ -444,3 +444,31 @@ def reconcile(
         _remove_workdir(workdir)
 
     return requeued, failed, orphaned
+
+
+def expire(conn: sqlite3.Connection, now: float | None = None) -> int:
+    """Delete jobs past their TTL and remove any residue on disk.
+
+    Audio is already unlinked per file during processing, so this normally
+    only removes metadata and results. The workdir removal covers the case
+    where a job expired without ever finishing - an abandoned upload must not
+    leave confidential audio on the volume indefinitely.
+    """
+    now = _now() if now is None else now
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        rows = conn.execute(
+            "SELECT job_id, workdir FROM jobs WHERE expires_at <= ?", (now,)
+        ).fetchall()
+        for row in rows:
+            conn.execute("DELETE FROM jobs WHERE job_id=?", (row["job_id"],))
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+    for row in rows:
+        _remove_workdir(row["workdir"])
+
+    return len(rows)

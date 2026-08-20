@@ -535,3 +535,39 @@ def test_reconcile_retries_a_surviving_workdir_on_a_complete_job(conn, tmp_path)
     jobs.reconcile(conn, stale_after=0.0)
 
     assert not workdir.exists(), "a surviving workdir must be removed on sweep"
+
+
+def test_expire_removes_old_jobs_and_their_files(conn, tmp_path):
+    """Results are kept for a retention window, then deleted. An expired job
+    must not leave confidential audio behind."""
+    import time as _time
+
+    from autoace.config import JOB_TTL_SECONDS
+
+    workdir, paths = _make_audio(tmp_path, "a.ogg")
+    job_id = jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+
+    removed = jobs.expire(conn, now=_time.time() + JOB_TTL_SECONDS + 1.0)
+
+    assert removed == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM jobs WHERE job_id=?", (job_id,)
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM files WHERE job_id=?", (job_id,)
+    ).fetchone()[0] == 0, "ON DELETE CASCADE must remove the file rows"
+    assert not workdir.exists(), "an expired job must not leave audio on disk"
+
+
+def test_expire_leaves_live_jobs_alone(conn, tmp_path):
+    workdir, paths = _make_audio(tmp_path, "a.ogg")
+    jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+    assert jobs.expire(conn) == 0
+    assert conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
+    assert workdir.exists()
