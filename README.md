@@ -76,17 +76,70 @@ print(json.dumps(score_batch(rows, preds), indent=2, default=str))
 
 ## Run the dashboard
 
+Two processes share a SQLite job store, because a 50-file batch takes ~87
+minutes and no HTTP request survives that:
+
 ```bash
+export AUTOACE_DATA_DIR=./_data
+python -m autoace.worker &                       # claims files, runs the pipeline
 AUTOACE_USER=autoace AUTOACE_PASSWORD=<password> python -m autoace.app
 ```
 
-Serves on `0.0.0.0:7860` (override with `PORT`). It refuses to start without a password. Upload a
-ZIP containing audio at the root plus one CSV manifest; the batch is validated before any inference
-runs, progress is shown per file, one bad file cannot fail the batch, and results download as CSV
-and JSON with original filenames preserved. If the manifest carries labels, the scoring view
-renders too.
+The web process binds `127.0.0.1:7860` (`AUTOACE_BIND=0.0.0.0` to change it) and
+refuses to start without a password. Upload a ZIP containing audio plus one CSV
+manifest; the batch is validated before any inference runs, one bad file cannot
+fail the batch, and results download as CSV and JSON with original filenames
+preserved.
 
-Rows flagged **REVIEW** — confidence below 0.60, or conflicting evidence — sort to the top.
+**Keep the job ID.** Processing is asynchronous — close the page and paste the
+ID into **Look up a job** to return to your results, which are kept for 7 days.
+Audio is deleted as soon as each file is analysed.
+
+Rows flagged **REVIEW** — confidence below 0.60, or conflicting evidence — sort
+to the top.
+
+If you see `no such column: manifest_csv`, you have a job store from before the
+schema changed: `rm -rf _data`.
+
+---
+
+## Deploying
+
+`deploy/setup.sh` provisions the whole VM idempotently: packages, Caddy, the
+host firewall, a swapfile, the venv, both systemd units, and a model-cache
+warm-up. Design and rationale for every choice below are in
+`docs/superpowers/specs/2026-08-19-hosted-dashboard-design.md`.
+
+**Instance:** Oracle Cloud Always Free, `VM.Standard.A1.Flex`, 2 OCPU / 12 GB,
+Ubuntu 24.04 aarch64, Python 3.12. 2 OCPU rather than the free 4 because the
+extra cores buy only 1.1–1.2× (see the memo's latency table) and smaller shape
+requests are far more likely to be granted — `Out of host capacity` is common
+for the free ARM shape.
+
+**Why not a PaaS free tier.** The worker's measured peak is **5.67 GiB**.
+Render's free tier is 512 MB — off by 11×. Every other free tier surveyed
+(Hugging Face Spaces, Railway, Fly.io/Koyeb/Northflank, AWS/GCP/Azure micro
+VMs) is 256 MB–1 GB; none come close. See the memo's hosting section for the
+full table and reasons.
+
+**TLS:** Caddy reverse-proxies `127.0.0.1:7860` to a free `duckdns.org`
+hostname, obtaining a real Let's Encrypt certificate. DuckDNS specifically,
+not `nip.io`/`sslip.io` — DuckDNS is on the Public Suffix List so it gets its
+own Let's Encrypt rate-limit quota; the others are not on the list and share
+one chronically-exhausted quota.
+
+**Swap:** a 4 GiB swapfile insures the gap between the 3.91 GiB steady state
+and the 5.67 GiB transient peak. Swapping is slow, but slow beats an OOM kill.
+
+**Two things `setup.sh` cannot do, because they are Oracle console operations
+rather than in-VM state:**
+
+1. Open a VCN ingress rule for TCP 80 and 443. Port 80 must stay open
+   *permanently* — Caddy's ACME renewals reuse it, not only the first
+   certificate issuance.
+2. Reserve the instance's public IP. Oracle's public IPs are ephemeral by
+   default; an unreserved one can change on reboot and silently break both
+   DNS and the certificate.
 
 ---
 
@@ -146,6 +199,8 @@ autoace/
   fuse.py           intensity reconciliation, agreement-based confidence
   pipeline.py       per-file orchestration with fail isolation
   eval.py           manifest -> grouped metrics
+  jobs.py           SQLite job store (WAL): queue, checkpoint log, results table
+  worker.py         drain loop: claims one file, runs the pipeline, checkpoints
   app.py            Gradio dashboard
 ```
 

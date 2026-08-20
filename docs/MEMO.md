@@ -334,7 +334,198 @@ matrices are a formality at this n.
 
 ---
 
-## 9. External API disclosure (brief §11)
+## 9. Hosted dashboard and deployment (brief §7)
+
+Brief §7 asks for a hosted dashboard: authenticated login, batch upload,
+validation, visible progress, per-file failure isolation, a review queue, and
+exports. §13 of the design doc already specified all of that and `app.py`
+already implemented it — **synchronously**. That does not survive contact
+with the measured numbers below, so this section covers what changed to make
+it asynchronous and durable, and where it now runs.
+Full design: `docs/superpowers/specs/2026-08-19-hosted-dashboard-design.md`.
+
+### 9.1 Why synchronous does not work
+
+A 50-file batch runs at **~87 minutes** (§9.2). No HTTP request survives
+that, and no evaluator should have to keep a browser tab open for it. The
+fix is a job queue: `autoace/jobs.py` (new, SQLite/WAL — schema, enqueue,
+exclusive claim, complete, fail, reconcile, expire) and `autoace/worker.py`
+(new, the drain loop) run as two systemd units against one on-disk store.
+`app.py`'s `run_batch` splits into `enqueue_batch` (validate, insert rows,
+return a job ID immediately) and `poll_job` (read-only projection of the
+store into the existing table/export shape via a `gr.Timer`). `jobs.py`
+imports nothing from `pipeline`, torch, or `gradio`, which is what keeps its
+tests fast and CI-safe (§9.8).
+
+A thread was considered and rejected: openSMILE and the DSP paths do not
+reliably release the GIL, so a worker thread would stall the UI exactly as
+badly as inline processing does.
+
+### 9.2 Measured constraints
+
+Every figure below is measured on the three provided calls, not estimated —
+worth stating because every cost figure in this project that came from
+arithmetic instead of measurement has been wrong (§4, §6): ASR 2.4× too
+pessimistic, SQUIM 19× and AST 31× too optimistic, LLM input tokens 3.3×
+under.
+
+| Quantity | Value |
+|---|---|
+| Peak worker memory | **5.67 GiB** (Windows peak working set, all three calls in one process, NLI-fallback path) |
+| Steady-state memory | **3.91 GiB** |
+| Per-file latency, 16 threads | 58.2 / 58.7 / 129.8 s (calls 001/002/003) |
+| Per-file latency, 2 threads | 64.6 s (1.11×) / 160.8 s (1.24×) |
+| 50-file batch | **~87 min** (~105 s/file × 50) |
+| Slow worker integration test | 170 s end-to-end on one real call |
+| Python dependency footprint | ~1.5 GiB (torch 527M, gradio 193M, llvmlite 117M, scipy 115M, transformers 97M, ctranslate2 60M) |
+| Model weight cache | ~5 GiB |
+
+Two consequences drive the deployment shape:
+
+**Core count is nearly irrelevant.** Capping the pipeline to 2 threads costs
+only 1.11–1.24×, so **RAM, not CPU, is the binding constraint**.
+`WhisperModel` is constructed without `cpu_threads`, so CTranslate2 derives
+its intra-op count from `OMP_NUM_THREADS` — the cap was genuinely applied,
+not silently ignored.
+
+**5.67 GiB is the *fallback* path, and we size for it anyway.**
+`bart-large-mnli` (~1.6 GB) loads only inside the `except` handler in
+`pipeline.py`; it is not a co-voter — the two voters are the LLM and the
+dimensional SER. The deployed happy path should be materially lighter, but an
+OpenAI outage must not OOM-kill the worker, so the box is sized against the
+worse number.
+
+**Caveat.** Windows peak working set is not Linux RSS. The magnitude should
+hold; the exact number will differ on the VM and must be re-measured there.
+Also unmeasured: the happy-path (LLM available) peak, which needs a valid
+API key.
+
+### 9.3 Free tiers refuted
+
+Recorded so none of these get re-proposed:
+
+| Option | Why it fails |
+|---|---|
+| Render free | 512 MB RAM, no persistent disk. Off by 11× against the 5.67 GiB peak. |
+| Hugging Face Spaces free | Gradio/Docker Spaces now require a paid plan (PRO for personal accounts); only Static Spaces are free. |
+| HF ZeroGPU (the free-account exception) | 5 minutes of GPU **per day**; `@spaces.GPU` is request-scoped and cannot host a long-running worker. |
+| Railway | No free tier; $5 trial credit only. |
+| Fly.io / Koyeb / Northflank | 256–512 MB free allowances. |
+| AWS / GCP / Azure free VMs | 1 GB micro instances. |
+
+**Selected: Oracle Cloud Always Free**, `VM.Standard.A1.Flex`, 2 OCPU / 12 GB,
+Ubuntu 24.04 aarch64, Python 3.12. 2 OCPU rather than the free 4 because §9.2
+shows the extra cores buy only 1.1–1.2×, while smaller shape requests are
+markedly more likely to be granted — Oracle ARM returns `Out of host
+capacity` frequently in popular regions. All ARM-risk dependencies publish
+`manylinux_aarch64` cp312 wheels: `torch` 2.13.0, `ctranslate2` 4.8.1, `numba`
+0.67.0, `opensmile` 2.6.0, `soundfile` (pure-python).
+
+**TLS is Caddy plus a DuckDNS hostname, no domain purchased.** DuckDNS
+specifically, not `nip.io`/`sslip.io`: Let's Encrypt scopes its 50-cert-per-
+registered-domain rate limit using the Public Suffix List. `duckdns.org` is
+on the PSL, so each `<name>.duckdns.org` gets its own quota; `nip.io` and
+`sslip.io` are not on the PSL, so every certificate for either shares one
+chronically-exhausted quota. Verified against the live list — a correctness
+difference, not a preference. A 4 GiB swapfile insures the gap between the
+3.91 GiB steady state and the 5.67 GiB peak; slow beats an OOM kill.
+
+### 9.4 Privacy posture (brief §5)
+
+- Audio is unlinked **per file**, as soon as its row is recorded — not at end
+  of job. It sits on disk only for the ~90 s it is being processed.
+- Results carry no audio. Retention is 7 days, then swept.
+- **TLS terminates in Caddy on our own VM**, so no third party sees request
+  plaintext. Every managed-platform option in §9.3 terminates TLS on someone
+  else's edge. DuckDNS provides DNS resolution only and carries no traffic.
+- The one genuine external dependency is OpenAI (§10), which receives the
+  annotated **transcript**, not audio — already disclosed there and
+  unchanged by this work.
+- Gradio binds `127.0.0.1`, so Caddy is the only off-box listener and a wrong
+  firewall rule cannot expose plaintext HTTP.
+
+### 9.5 Durability and failure handling
+
+The unit of work is one file (58–161 s), so any interruption costs at most
+one file. `complete()`/`fail()` are atomic in SQL; filesystem work (deleting
+the audio, removing the workdir) follows the commit, because an `rmtree`
+cannot be rolled back if the commit then failed.
+
+`reconcile()` runs on worker startup: it requeues orphaned `running` rows,
+abandons rows past `MAX_ATTEMPTS = 2`, and finalises jobs orphaned with no
+outstanding files.
+
+**The retry cap is load-bearing, not a nicety.** Without it, a file that OOM-
+kills the worker gets requeued by `reconcile()` and dies again on the same
+input — forever. `attempts` increments at *claim* time rather than at
+failure time, so a process killed before running any Python still counts
+against the cap. This was found by review, not by inspection, and confirmed
+empirically: a job stuck at `running` with 0 outstanding files, workdir and
+audio still on disk.
+
+One bad file marks its own row `failed` with the reason and appears in the
+table **and** the exports — the batch continues rather than aborting.
+Validation failures are reported before any row is inserted and before any
+inference runs.
+
+### 9.6 CI is structurally limited, and that is deliberate
+
+`reference/` is gitignored because the audio is confidential (brief §5) and
+the model weights are ~5 GiB, so GitHub Actions can only run tests needing
+neither: `jobs.py`, `fuse.py`, schema, manifest, and the app's
+validation/export tests. This is attributable to §5, not to thin coverage —
+the pipeline and worker integration tests exist and pass locally against the
+provided audio but cannot run in a public CI environment.
+
+### 9.7 Two brief §7 gaps found in this build
+
+Reported as found-and-fixed, not as new features:
+
+1. **The results table displayed only 6 of the 9 schema fields.**
+   `background_noise_present`, `speaker_overlap_present`, and
+   `long_silence_present` were exported to CSV/JSON but never shown in the
+   dashboard. Brief §7 requires the *displayed* prediction to use the
+   required output schema, and §8 scores result review inside the 10%
+   dashboard weighting, so exported-but-invisible did not count. Also fixed
+   in the same pass: `results_to_table`'s sort key indexed columns by
+   hard-coded position and would have silently sorted on the wrong column
+   the next time a column was inserted.
+2. **A manifest with a UTF-8 BOM would have failed an entire batch.**
+   `load_manifest` opened with `encoding="utf-8"`, so an Excel-saved CSV —
+   the likely form of an evaluator-supplied manifest — makes the first
+   fieldname `﻿name`, and every `record["name"]` then raises `KeyError`
+   before any inference runs. Confirmed as a real `KeyError`, not
+   theoretical. Fixed to `utf-8-sig`, alongside handling for an omitted
+   `result_json` column (which brief §7 explicitly permits for an unlabeled
+   hidden test set), blank trailing rows, whitespace-padded names, and
+   errors that name the offending row.
+
+### 9.8 Limitations
+
+1. **One worker: jobs are FIFO across users.** A second batch waits up to
+   ~87 minutes behind the first. Surfaced as queue position and an ETA
+   rather than a silent wait.
+2. **Peak memory measured on Windows, not Linux ARM** — must be re-measured
+   on the VM before the §9.2 figures are trusted there.
+3. **The happy-path (LLM available) peak was never measured**; it needs a
+   valid API key.
+4. **Oracle ARM `Out of host capacity`** can block provisioning entirely;
+   there is no in-repo fix, only the smaller-shape mitigation in §9.3.
+5. **A file that dies twice is reported `failed` rather than analysed** —
+   the alternative is a crash loop (§9.5).
+6. `shutil.rmtree(ignore_errors=True)` silently no-ops on Windows when a
+   handle is still open, so `_remove_workdir` reports whether the directory
+   is actually gone rather than trusting the call. The exposure is lower on
+   the Linux deployment target.
+7. **Swap can mask memory pressure as latency.**
+8. **No backups.** Results are reproducible and audio should not persist
+   past processing, so none are taken.
+9. **CI cannot cover the pipeline or worker end-to-end** (§9.6) — a
+   consequence of brief §5, not of thin test-writing.
+
+---
+
+## 10. External API disclosure (brief §11)
 
 | item | detail |
 |---|---|
@@ -354,7 +545,7 @@ the target repository is public.
 
 ---
 
-## 10. Next steps, in priority order
+## 11. Next steps, in priority order
 
 1. **Fix code-switched speaker assignment** using per-segment `detect_language()` — viability
    already demonstrated (§8.2). It is now the **direct cause of one of the two remaining tone
@@ -374,3 +565,5 @@ the target repository is public.
    if throughput allows.
 6. **Find a real line-noise discriminator** for `background_noise_type`, which needs labelled
    examples of static, hum and crackle.
+7. **Deploy to the VM and re-measure §9.2 on Linux ARM** — the peak-memory figure is currently
+   Windows-only and is the last unverified number in the hosting section.
