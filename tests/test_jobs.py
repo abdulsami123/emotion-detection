@@ -335,3 +335,73 @@ def test_fail_marks_the_row_failed_and_unlinks(conn, tmp_path):
     assert row["status"] == "failed"
     assert row["error"] == "retries exhausted"
     assert row["audio_path"] is None
+
+
+def test_complete_is_atomic_across_file_and_job_state(conn, tmp_path):
+    """The file update and the job finalisation must land together.
+
+    If a crash could persist 'file done' without 'job complete', the job would
+    sit at `running` forever with zero pending or running files - a state
+    reconcile() cannot detect, because it scans for running FILE rows and there
+    are none. Asserting no such intermediate state is observable after
+    complete() returns is the closest a single-process test can get.
+    """
+    workdir, paths = _make_audio(tmp_path, "a.ogg")
+    job_id = jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+    claimed = jobs.claim_next(conn)
+    jobs.complete(conn, claimed, FileResult(name=claimed.name, analysis=_analysis()))
+
+    job = conn.execute("SELECT status FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    outstanding = conn.execute(
+        "SELECT COUNT(*) FROM files WHERE job_id=? AND status IN ('pending','running')",
+        (job_id,),
+    ).fetchone()[0]
+    assert (job["status"], outstanding) == ("complete", 0)
+
+
+def test_remove_workdir_reports_when_it_could_not_delete(tmp_path):
+    """rmtree(ignore_errors=True) silently no-ops when a handle is open, so a
+    job marked `complete` is not by itself proof the audio was removed. The
+    caller must be able to tell."""
+    workdir = tmp_path / "held"
+    workdir.mkdir()
+    victim = workdir / "a.ogg"
+    victim.write_bytes(b"x")
+
+    with victim.open("rb"):
+        result = jobs._remove_workdir(str(workdir))
+
+    if workdir.exists():
+        assert result is False, "must report failure when the directory survives"
+    else:
+        assert result is True, "POSIX allows unlink of an open file; that is success"
+
+
+def test_remove_workdir_on_an_already_gone_directory_is_success(tmp_path):
+    assert jobs._remove_workdir(str(tmp_path / "never-existed")) is True
+    assert jobs._remove_workdir(None) is True
+
+
+def test_claim_next_rolls_back_and_leaves_the_lock_released(conn, tmp_path, monkeypatch):
+    """The BEGIN IMMEDIATE in claim_next must release its write lock on failure.
+    A leaked lock would make every later transaction raise 'cannot start a
+    transaction within a transaction'."""
+    workdir, paths = _make_audio(tmp_path, "a.ogg")
+    jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+
+    real_now = jobs._now
+    monkeypatch.setattr(jobs, "_now", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError):
+        jobs.claim_next(conn)
+    monkeypatch.setattr(jobs, "_now", real_now)
+
+    # The row must be untouched and the connection must still be usable.
+    assert conn.execute("SELECT status, attempts FROM files").fetchone()["status"] == "pending"
+    claimed = jobs.claim_next(conn)
+    assert claimed is not None and claimed.attempts == 1

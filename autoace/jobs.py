@@ -12,6 +12,7 @@ different executor (a durable workflow engine, a second machine) could replace
 
 from __future__ import annotations
 
+import logging
 import shutil
 import sqlite3
 import time
@@ -25,6 +26,8 @@ from autoace.config import (
     JOBS_DB,
     JOB_TTL_SECONDS,
 )
+
+log = logging.getLogger("autoace.jobs")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -218,39 +221,61 @@ def claim_next(conn: sqlite3.Connection) -> ClaimedFile | None:
     )
 
 
-def _unlink_audio(conn: sqlite3.Connection, job_id: str, name: str) -> None:
-    """Delete the staged audio and clear its path.
-
-    Missing-file errors are swallowed: a retry after a crash may find the
-    audio already gone, and that is success, not a problem to report.
-    """
+def _clear_audio_path(conn: sqlite3.Connection, job_id: str, name: str) -> str | None:
+    """SQL half of unlinking: NULL the column, return the path the caller must
+    delete after the transaction commits."""
     row = conn.execute(
         "SELECT audio_path FROM files WHERE job_id=? AND name=?", (job_id, name)
     ).fetchone()
-    if row is not None and row["audio_path"]:
-        Path(row["audio_path"]).unlink(missing_ok=True)
     conn.execute(
         "UPDATE files SET audio_path=NULL WHERE job_id=? AND name=?", (job_id, name)
     )
+    return row["audio_path"] if row is not None else None
 
 
-def _finalise_if_done(conn: sqlite3.Connection, job_id: str) -> None:
-    """Mark the job complete and remove its workdir once no file is left to
-    process. Called from both complete() and fail() so either path can be the
-    one that finishes the job."""
+def _finalise_sql(conn: sqlite3.Connection, job_id: str) -> str | None:
+    """SQL half of finalisation. Returns the workdir to remove if the job just
+    became complete, else None.
+
+    Must run inside the same transaction as the file-row update that may have
+    been the last outstanding file - otherwise a crash between the two leaves
+    the job stuck at `running` with nothing left for reconcile() to find.
+    """
     outstanding = conn.execute(
         "SELECT COUNT(*) FROM files WHERE job_id=? AND status IN ('pending','running')",
         (job_id,),
     ).fetchone()[0]
     if outstanding:
-        return
-
+        return None
     conn.execute("UPDATE jobs SET status='complete' WHERE job_id=?", (job_id,))
-    row = conn.execute(
-        "SELECT workdir FROM jobs WHERE job_id=?", (job_id,)
-    ).fetchone()
-    if row is not None and row["workdir"]:
-        shutil.rmtree(row["workdir"], ignore_errors=True)
+    row = conn.execute("SELECT workdir FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    return row["workdir"] if row is not None and row["workdir"] else None
+
+
+def _remove_audio(path: str | None) -> None:
+    """Best-effort delete of one staged file. Idempotent: a retry after a crash
+    may find it already gone, which is success."""
+    if path:
+        Path(path).unlink(missing_ok=True)
+
+
+def _remove_workdir(workdir: str | None) -> bool:
+    """Best-effort removal of a finished job's staging directory.
+
+    Returns whether the directory is actually gone. `ignore_errors=True` hides
+    a failure caused by an open handle, and a job reporting `complete` must not
+    be mistaken for a guarantee that confidential audio was removed - so the
+    result is reported rather than swallowed.
+    """
+    if not workdir:
+        return True
+    shutil.rmtree(workdir, ignore_errors=True)
+    gone = not Path(workdir).exists()
+    if not gone:
+        log.warning(
+            "workdir %s could not be removed; staged audio is still on disk", workdir
+        )
+    return gone
 
 
 def complete(
@@ -261,35 +286,59 @@ def complete(
     `analyse_file` returning `FileResult(error=...)` is a COMPLETED unit with a
     failure recorded, so the row goes to `failed` - not back to `pending`. Only
     an exception or a killed process earns a retry (see `reconcile`).
+
+    Every SQL write is in ONE transaction so a crash can never persist
+    "file done, job not finalised" - a state no reconcile pass could detect,
+    because it leaves no pending or running file row to find. The filesystem
+    work follows the commit deliberately: it cannot be rolled back, and both
+    operations are idempotent.
     """
     status = "done" if result.analysis is not None else "failed"
     result_json = (
         result.analysis.model_dump_json() if result.analysis is not None else None
     )
-    conn.execute(
-        "UPDATE files SET status=?, result_json=?, reasoning=?, review_flagged=?,"
-        " error=?, finished_at=? WHERE job_id=? AND name=?",
-        (
-            status,
-            result_json,
-            result.reasoning,
-            int(bool(result.review_flagged)),
-            result.error,
-            _now(),
-            claimed.job_id,
-            claimed.name,
-        ),
-    )
-    _unlink_audio(conn, claimed.job_id, claimed.name)
-    _finalise_if_done(conn, claimed.job_id)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "UPDATE files SET status=?, result_json=?, reasoning=?, review_flagged=?,"
+            " error=?, finished_at=? WHERE job_id=? AND name=?",
+            (
+                status,
+                result_json,
+                result.reasoning,
+                int(bool(result.review_flagged)),
+                result.error,
+                _now(),
+                claimed.job_id,
+                claimed.name,
+            ),
+        )
+        audio_path = _clear_audio_path(conn, claimed.job_id, claimed.name)
+        workdir = _finalise_sql(conn, claimed.job_id)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+    _remove_audio(audio_path)
+    _remove_workdir(workdir)
 
 
 def fail(conn: sqlite3.Connection, claimed: ClaimedFile, error: str) -> None:
-    """Give up on a file permanently."""
-    conn.execute(
-        "UPDATE files SET status='failed', error=?, finished_at=?"
-        " WHERE job_id=? AND name=?",
-        (error, _now(), claimed.job_id, claimed.name),
-    )
-    _unlink_audio(conn, claimed.job_id, claimed.name)
-    _finalise_if_done(conn, claimed.job_id)
+    """Give up on a file permanently. Same atomicity contract as `complete`."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "UPDATE files SET status='failed', error=?, finished_at=?"
+            " WHERE job_id=? AND name=?",
+            (error, _now(), claimed.job_id, claimed.name),
+        )
+        audio_path = _clear_audio_path(conn, claimed.job_id, claimed.name)
+        workdir = _finalise_sql(conn, claimed.job_id)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+    _remove_audio(audio_path)
+    _remove_workdir(workdir)
