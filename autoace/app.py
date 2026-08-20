@@ -6,7 +6,9 @@ running server:
 
   - `validate_batch`   -> validation BEFORE processing (missing/unlisted/
                            unsupported files reported as a list).
-  - `run_batch`         -> visible progress + per-file failure isolation.
+  - `enqueue_batch` /
+    `poll_job`          -> visible progress + per-file failure isolation, via
+                           an async job queue rather than a blocking request.
   - `results_to_csv` /
     `results_to_json`   -> downloadable exports, original filenames preserved,
                            failures included rather than dropped.
@@ -449,27 +451,47 @@ def poll_job(job_id: str):
 
 
 def build_app() -> gr.Blocks:
-    """The UI. Construction only - never calls `.launch()`."""
+    """The UI. Construction only - never calls `.launch()`.
+
+    Asynchronous by necessity: a 50-file batch is ~87 minutes, so the upload
+    handler only enqueues and a `gr.Timer` polls the job store. Closing the tab
+    stops the timer but not the worker, which is why the job-ID box exists.
+    """
     with gr.Blocks(title="AutoAce - Call Tone Review") as demo:
         gr.Markdown(
             "# AutoAce batch review\n"
-            "Upload a folder or ZIP containing audio files at the root plus "
-            "one CSV manifest (`name,result_json`). Validation runs before "
-            "any inference, and rows flagged for human review (low "
-            "confidence or a conflicting signal) sort to the top of the "
-            "table below."
+            "Upload a folder or ZIP containing audio files plus one CSV "
+            "manifest (`name,result_json`). Validation runs before any "
+            "inference. Processing happens in the background at roughly "
+            "**105 s per file**, so a 50-file batch takes about 90 minutes - "
+            "**keep the job ID**, close the page if you like, and paste the ID "
+            "back in to return to your results. Rows flagged for human review "
+            "(low confidence or conflicting signals) sort to the top."
         )
+
+        job_state = gr.State("")
+
         upload = gr.File(
             label="Audio files + manifest CSV, or a single ZIP",
             file_count="multiple",
             type="filepath",
         )
-        run_button = gr.Button("Validate & run batch", variant="primary")
-        status = gr.Textbox(label="Status", lines=6, interactive=False)
+        run_button = gr.Button("Validate & queue batch", variant="primary")
+
+        with gr.Row():
+            job_box = gr.Textbox(
+                label="Look up a job",
+                placeholder="Paste a job ID to resume watching it",
+                scale=4,
+            )
+            lookup_button = gr.Button("Look up", scale=1)
+
+        status = gr.Markdown()
         table = gr.Dataframe(
             headers=TABLE_HEADERS,
             label="Results (review-flagged rows first)",
             interactive=False,
+            wrap=True,
         )
         with gr.Row():
             csv_out = gr.File(label="Download results.csv")
@@ -480,15 +502,29 @@ def build_app() -> gr.Blocks:
             interactive=False,
         )
 
-        # Minimal wiring so construction stays valid now that run_batch is
-        # gone. This mapping is wrong (enqueue_batch returns (job_id, status),
-        # not the five outputs below) - Task 15 rewires the Blocks UI for the
-        # async job queue properly.
+        timer = gr.Timer(UI_POLL_SECONDS)
+        poll_outputs = [status, table, csv_out, json_out, scoring]
+
+        def _submit(files):
+            """Queue the batch and seed both the polling state and the lookup
+            box, so the ID is visible and selectable rather than only mentioned
+            in the status text."""
+            job_id, message = enqueue_batch(files)
+            return job_id, job_id, message
+
         run_button.click(
-            fn=enqueue_batch,
+            fn=_submit,
             inputs=[upload],
-            outputs=[status, status],
+            outputs=[job_state, job_box, status],
         )
+
+        lookup_button.click(
+            fn=lambda jid: (jid or "").strip(),
+            inputs=[job_box],
+            outputs=[job_state],
+        ).then(fn=poll_job, inputs=[job_state], outputs=poll_outputs)
+
+        timer.tick(fn=poll_job, inputs=[job_state], outputs=poll_outputs)
 
     return demo
 
@@ -504,7 +540,11 @@ if __name__ == "__main__":
 
     app = build_app()
     app.launch(
-        server_name="0.0.0.0",
+        # 127.0.0.1, not 0.0.0.0: Caddy terminates TLS on the VM and is the
+        # only listener reachable from off-box, so a wrong firewall rule
+        # cannot expose the app over plaintext HTTP.
+        server_name=os.environ.get("AUTOACE_BIND", "127.0.0.1"),
         server_port=int(os.environ.get("PORT", "7860")),
         auth=(user, password),
+        max_file_size=f"{MAX_UPLOAD_MB}mb",
     )
