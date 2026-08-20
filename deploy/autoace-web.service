@@ -10,6 +10,9 @@ WorkingDirectory=/opt/autoace/repo
 EnvironmentFile=/etc/autoace.env
 Environment=AUTOACE_DATA_DIR=/opt/autoace/data
 Environment=HF_HOME=/opt/autoace/hf
+# speechbrain resolves savedir against the CWD, so ECAPA needs an explicit
+# absolute cache dir or each process re-downloads it.
+Environment=AUTOACE_MODELS_DIR=/opt/autoace/models
 Environment=AUTOACE_BIND=127.0.0.1
 Environment=PORT=7860
 ExecStart=/opt/autoace/venv/bin/python -m autoace.app

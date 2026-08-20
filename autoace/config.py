@@ -223,6 +223,12 @@ DATA_DIR = Path(os.environ.get("AUTOACE_DATA_DIR", REPO_ROOT / "_data"))
 JOBS_DB = DATA_DIR / "jobs.db"
 UPLOAD_DIR = DATA_DIR / "uploads"
 
+# Weights that are not fetched through HF_HOME land here. speechbrain's
+# `savedir` is resolved relative to the CURRENT WORKING DIRECTORY, so a bare
+# "models/ecapa" silently re-downloads whenever a process runs from anywhere
+# else - the web and worker units are separate processes. Absolute by default.
+MODELS_DIR = Path(os.environ.get("AUTOACE_MODELS_DIR", REPO_ROOT / "models"))
+
 JOB_TTL_SECONDS = 7 * 24 * 3600   # DERIVED — results kept until download. Audio is
                                   # unlinked per file regardless, so this governs
                                   # metadata and results only.

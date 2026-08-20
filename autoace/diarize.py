@@ -23,6 +23,7 @@ from autoace.config import (
     AGENT_REF_MIN_SIM,
     DIARIZATION_MIN_SILHOUETTE,
     ECAPA_MODEL,
+    MODELS_DIR,
     SAMPLE_RATE,
 )
 from autoace.vad import Segment
@@ -48,7 +49,7 @@ def _load_encoder():
     # assume the runner has; copy the cached weights into savedir instead.
     return EncoderClassifier.from_hparams(
         source=ECAPA_MODEL,
-        savedir="models/ecapa",
+        savedir=str(MODELS_DIR / "ecapa"),
         run_opts={"device": "cpu"},
         local_strategy=LocalStrategy.COPY,
     )

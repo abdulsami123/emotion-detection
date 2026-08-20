@@ -10,6 +10,9 @@ WorkingDirectory=/opt/autoace/repo
 EnvironmentFile=/etc/autoace.env
 Environment=AUTOACE_DATA_DIR=/opt/autoace/data
 Environment=HF_HOME=/opt/autoace/hf
+# speechbrain resolves savedir against the CWD, so ECAPA needs an explicit
+# absolute cache dir or each process re-downloads it.
+Environment=AUTOACE_MODELS_DIR=/opt/autoace/models
 # The shape is 2 OCPU (VM.Standard.A1.Flex). Letting BLAS/OpenMP thread pools
 # default to auto-detected core counts (or worse, oversubscribe) causes
 # contention rather than speedup on only 2 cores, so both are pinned to match.

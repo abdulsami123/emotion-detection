@@ -12,6 +12,9 @@ REPO_DIR="/opt/autoace/repo"
 VENV_DIR="/opt/autoace/venv"
 DATA_DIR="/opt/autoace/data"
 HF_DIR="/opt/autoace/hf"
+# speechbrain resolves `savedir` against the CWD rather than HF_HOME, so ECAPA
+# needs its own explicit absolute cache dir or every process re-downloads it.
+MODELS_DIR=/opt/autoace/models
 ENV_FILE="/etc/autoace.env"
 APP_USER="ubuntu"
 
@@ -87,7 +90,7 @@ fi
 log "Creating /opt/autoace directories"
 sudo mkdir -p /opt/autoace
 sudo chown "$APP_USER:$APP_USER" /opt/autoace
-sudo -u "$APP_USER" mkdir -p "$DATA_DIR" "$HF_DIR"
+sudo -u "$APP_USER" mkdir -p "$DATA_DIR" "$HF_DIR" "$MODELS_DIR"
 
 # ----------------------------------------------------------------------- repo
 if [ -d "$REPO_DIR/.git" ]; then
@@ -161,7 +164,7 @@ DROPINEOF
 log "Warming model cache (~5 GiB total on first run; re-runs are fast no-ops)"
 (
 	cd "$REPO_DIR"
-	sudo -u "$APP_USER" env HF_HOME="$HF_DIR" "$VENV_DIR/bin/python" - <<'PY'
+	sudo -u "$APP_USER" env HF_HOME="$HF_DIR" AUTOACE_MODELS_DIR="$MODELS_DIR" "$VENV_DIR/bin/python" - <<'PY'
 print("loading whisper (asr)...", flush=True)
 from autoace.asr import _load_model as _load_asr_model
 _load_asr_model()
