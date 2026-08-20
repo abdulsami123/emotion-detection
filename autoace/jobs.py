@@ -72,3 +72,72 @@ def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
 
 def _now() -> float:
     return time.time()
+
+
+def enqueue(
+    conn: sqlite3.Connection,
+    *,
+    workdir: Path | str,
+    audio_by_name: dict[str, Path],
+    validation_json: str,
+    manifest_labelled: bool,
+) -> str:
+    """Insert one job row plus one `pending` file row per matched audio file.
+
+    `validation_json` is stored verbatim so the pre-flight report (missing
+    rows, unlisted audio, unsupported formats) survives a page reload - the
+    evaluator must be able to come back to a job and still see why files were
+    skipped.
+    """
+    job_id = str(uuid.uuid4())
+    now = _now()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "INSERT INTO jobs (job_id, status, created_at, expires_at, total_files,"
+            " manifest_labelled, workdir, validation_json)"
+            " VALUES (?, 'pending', ?, ?, ?, ?, ?, ?)",
+            (
+                job_id,
+                now,
+                now + JOB_TTL_SECONDS,
+                len(audio_by_name),
+                int(manifest_labelled),
+                str(workdir),
+                validation_json,
+            ),
+        )
+        conn.executemany(
+            "INSERT INTO files (job_id, name, status, audio_path)"
+            " VALUES (?, ?, 'pending', ?)",
+            [(job_id, name, str(path)) for name, path in audio_by_name.items()],
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    return job_id
+
+
+def enqueue_failed(
+    conn: sqlite3.Connection,
+    *,
+    workdir: Path | str,
+    validation_json: str,
+    error: str,
+) -> str:
+    """Record a batch that failed validation, with no file rows.
+
+    A failed job still gets a row so the UI can render the reason from a
+    job-ID lookup rather than only in the response that happened to be on
+    screen at the time.
+    """
+    job_id = str(uuid.uuid4())
+    now = _now()
+    conn.execute(
+        "INSERT INTO jobs (job_id, status, created_at, expires_at, total_files,"
+        " manifest_labelled, workdir, validation_json, error)"
+        " VALUES (?, 'failed', ?, ?, 0, 0, ?, ?, ?)",
+        (job_id, now, now + JOB_TTL_SECONDS, str(workdir), validation_json, error),
+    )
+    return job_id
