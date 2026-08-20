@@ -43,13 +43,21 @@ from autoace.schema import CallAnalysis
 # "name" first, then the nine schema fields, in schema declaration order.
 SCHEMA_COLUMNS = ("name",) + tuple(CallAnalysis.model_fields.keys())
 
+# One column per schema field plus the filename, the review flag, and the tone
+# path. Brief section 7 requires the DISPLAYED prediction to use the required
+# output schema, so a field that is exported but not shown does not count -
+# background_noise_present, speaker_overlap_present, and long_silence_present
+# were previously missing here.
 TABLE_HEADERS = [
     "file",
     "tone",
     "intensity",
+    "noise?",
     "noise type",
     "severity",
     "quality",
+    "overlap?",
+    "long silence?",
     "confidence",
     "flag",
     "notes",
@@ -170,10 +178,24 @@ def results_to_json(results: list[FileResult]) -> str:
     return json.dumps(payload, indent=2)
 
 
+def _yn(value: bool) -> str:
+    """Booleans render as yes/no. A bare True next to enum strings like
+    `slightly_impaired` is hard to scan in a 50-row table."""
+    return "yes" if value else "no"
+
+
 def results_to_table(results: list[FileResult]) -> list[list]:
-    """Display rows for the review queue. Review-flagged (or outright
-    failed) rows sort to the top, then ascending confidence - a degraded
-    result must be visible, not buried at the bottom of a 50-row batch."""
+    """Display rows for the review queue.
+
+    Review-flagged (or outright failed) rows sort to the top, then ascending
+    confidence - a degraded result must be visible, not buried at the bottom of
+    a 50-row batch.
+
+    Every row has exactly `len(TABLE_HEADERS)` cells, including error and
+    pending rows: Gradio mangles a dataframe with ragged rows rather than
+    complaining. A pending file is labelled `queued`, not `ERROR` - it has not
+    failed, it has not run.
+    """
     rows: list[list] = []
     for result in results:
         if result.analysis is not None:
@@ -185,22 +207,24 @@ def results_to_table(results: list[FileResult]) -> list[list]:
                     result.name,
                     data["emotional_tone"],
                     data["emotional_intensity"],
+                    _yn(data["background_noise_present"]),
                     data["background_noise_type"],
                     data["background_noise_severity"],
                     data["audio_quality"],
+                    _yn(data["speaker_overlap_present"]),
+                    _yn(data["long_silence_present"]),
                     round(confidence, 3),
                     "REVIEW" if flagged else "",
                     result.reasoning,
                 ]
             )
         else:
-            rows.append(
-                [result.name, "", "", "", "", "", None, "ERROR", result.error or ""]
-            )
+            state = "ERROR" if result.error else "queued"
+            rows.append([result.name] + [""] * 8 + [None, state, result.error or ""])
 
     def sort_key(row):
-        flagged = row[7] in ("REVIEW", "ERROR")
-        confidence = row[6] if isinstance(row[6], (int, float)) else -1.0
+        flagged = row[-2] in ("REVIEW", "ERROR")
+        confidence = row[-3] if isinstance(row[-3], (int, float)) else -1.0
         return (0 if flagged else 1, confidence)
 
     rows.sort(key=sort_key)
@@ -394,18 +418,7 @@ def poll_job(job_id: str):
     for problem in validation.get("problems", []):
         lines.append(f"- {problem}")
 
-    # `results_to_table`'s ERROR branch fires on `analysis is None` alone, with
-    # no way to tell "actually failed" from "not processed yet" - correct for
-    # a finished batch, wrong here: an unclaimed file would rank as an error
-    # ahead of a genuinely REVIEW-flagged completed row. So the still-
-    # outstanding (pending/running) rows are kept out of that sort and
-    # appended after, tagged PENDING rather than ERROR.
-    finished = [r for r in results if r.analysis is not None or r.error]
-    outstanding = [r for r in results if r.analysis is None and not r.error]
-    table = results_to_table(finished)
-    table.extend(
-        [r.name, "", "", "", "", "", None, "PENDING", ""] for r in outstanding
-    )
+    table = results_to_table(results)
 
     out_dir = Path(tempfile.mkdtemp(prefix="autoace_out_"))
     csv_path = out_dir / "results.csv"

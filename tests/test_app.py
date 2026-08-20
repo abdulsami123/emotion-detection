@@ -380,3 +380,122 @@ def test_scoring_view_stays_empty_for_an_unlabelled_batch(tmp_path, monkeypatch)
 
     _, _, _, _, scoring = app_module.poll_job(job_id)
     assert scoring == ""
+
+
+def test_table_displays_every_schema_field():
+    """Brief section 7 requires the displayed prediction to use the required
+    output schema. Three boolean fields were exported but never shown:
+    background_noise_present, speaker_overlap_present, long_silence_present."""
+    from autoace.app import SCHEMA_COLUMNS, TABLE_HEADERS, results_to_table
+
+    rows = results_to_table(
+        [
+            FileResult(
+                name="a.ogg",
+                analysis=_analysis(
+                    background_noise_present=True,
+                    background_noise_type="office chatter",
+                    background_noise_severity="low",
+                    speaker_overlap_present=True,
+                    long_silence_present=True,
+                ),
+            )
+        ]
+    )
+
+    assert len(rows) == 1
+    assert len(rows[0]) == len(TABLE_HEADERS), (
+        "every row must have exactly one cell per header"
+    )
+
+    schema_fields = set(SCHEMA_COLUMNS) - {"name"}
+    assert len(TABLE_HEADERS) >= len(schema_fields) + 1
+
+    flat = " ".join(str(cell) for cell in rows[0])
+    assert "office chatter" in flat
+    for label in ("noise", "overlap", "silence"):
+        assert any(label in h.lower() for h in TABLE_HEADERS), (
+            f"no column covers {label}"
+        )
+
+
+def test_table_shows_boolean_fields_as_readable_values():
+    """A raw Python True/False in a Gradio dataframe reads poorly next to enum
+    strings like slightly_impaired; yes/no keeps the row scannable."""
+    from autoace.app import results_to_table
+
+    rows = results_to_table(
+        [
+            FileResult(
+                name="a.ogg",
+                analysis=_analysis(
+                    background_noise_present=False,
+                    speaker_overlap_present=True,
+                    long_silence_present=False,
+                ),
+            )
+        ]
+    )
+    flat = [str(cell) for cell in rows[0]]
+    assert "yes" in flat and "no" in flat
+
+
+def test_error_and_pending_rows_have_one_cell_per_header():
+    """Gradio silently mangles a dataframe with ragged rows, and a pending file
+    must not be mislabelled ERROR - it has not failed, it has not run."""
+    from autoace.app import TABLE_HEADERS, results_to_table
+
+    rows = results_to_table(
+        [
+            FileResult(name="bad.ogg", analysis=None, error="could not decode"),
+            FileResult(name="waiting.ogg", analysis=None),
+        ]
+    )
+    assert {len(r) for r in rows} == {len(TABLE_HEADERS)}
+    flat = " ".join(str(c) for r in rows for c in r)
+    assert "ERROR" in flat
+    assert "queued" in flat
+    by_name = {r[0]: r for r in rows}
+    assert "ERROR" not in " ".join(str(c) for c in by_name["waiting.ogg"]), (
+        "a pending file must not be labelled ERROR"
+    )
+
+
+def test_poll_job_rows_all_match_the_header_width(tmp_path, monkeypatch):
+    """Ragged rows are the failure mode Gradio hides. Pending and finished rows
+    must be equally wide, which is why row shape lives only in
+    results_to_table."""
+    app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
+
+    from autoace.pipeline import FileResult as FR
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    for name in ("a.ogg", "b.ogg", "c.ogg"):
+        (batch / name).write_bytes(b"stub")
+    (batch / "m.csv").write_text(
+        "name,result_json\na.ogg,\nb.ogg,\nc.ogg,\n", encoding="utf-8"
+    )
+
+    job_id, _ = app_module.enqueue_batch(str(batch))
+
+    conn = jobs_module.connect()
+    try:
+        done = jobs_module.claim_next(conn)
+        jobs_module.complete(conn, done, FR(name=done.name, analysis=_analysis()))
+        bad = jobs_module.claim_next(conn)
+        jobs_module.complete(
+            conn, bad, FR(name=bad.name, analysis=None, error="could not decode")
+        )
+        # The third file stays pending.
+    finally:
+        conn.close()
+
+    _, rows, *_ = app_module.poll_job(job_id)
+
+    assert len(rows) == 3, "done, failed and pending must all appear"
+    widths = {len(r) for r in rows}
+    assert widths == {len(app_module.TABLE_HEADERS)}, (
+        f"ragged rows: widths {widths} against "
+        f"{len(app_module.TABLE_HEADERS)} headers"
+    )
