@@ -21,10 +21,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from autoace.config import (
+    EXPORTS_DIR,
+    JOB_TTL_SECONDS,
     JOBS_BUSY_TIMEOUT_MS,
     JOBS_CONNECT_TIMEOUT_S,
     JOBS_DB,
-    JOB_TTL_SECONDS,
     MAX_ATTEMPTS,
     MEAN_SECONDS_PER_FILE,
     STALE_RUNNING_SECONDS,
@@ -479,6 +480,10 @@ def expire(conn: sqlite3.Connection, now: float | None = None) -> int:
 
     for row in rows:
         _remove_workdir(row["workdir"])
+        # The dashboard writes results.csv/json to one directory per job.
+        # It shares the job's lifetime, so it expires with the job rather
+        # than accumulating for the life of the deployment.
+        _remove_workdir(str(EXPORTS_DIR / row["job_id"]))
 
     return len(rows)
 

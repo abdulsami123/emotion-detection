@@ -499,3 +499,58 @@ def test_poll_job_rows_all_match_the_header_width(tmp_path, monkeypatch):
         f"ragged rows: widths {widths} against "
         f"{len(app_module.TABLE_HEADERS)} headers"
     )
+
+
+def test_repeated_polling_does_not_leak_export_directories(tmp_path, monkeypatch):
+    """poll_job runs on every gr.Timer tick. A fresh mkdtemp per call leaked one
+    directory every UI_POLL_SECONDS for as long as a tab stayed open - over a
+    thousand across an 87-minute batch, and still growing afterwards because the
+    timer keeps firing once a job is complete. One directory per job, overwritten
+    in place, is the bound."""
+    app_module, _ = _reload_modules(monkeypatch, tmp_path)
+
+    from autoace.config import EXPORTS_DIR
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    (batch / "a.ogg").write_bytes(b"stub")
+    (batch / "m.csv").write_text("name,result_json\na.ogg,\n", encoding="utf-8")
+
+    job_id, _ = app_module.enqueue_batch(str(batch))
+
+    paths = set()
+    for _ in range(5):
+        _, _, csv_path, json_path, _ = app_module.poll_job(job_id)
+        paths.add(Path(csv_path).parent)
+
+    assert len(paths) == 1, f"each poll made a new directory: {paths}"
+    assert list(paths)[0] == EXPORTS_DIR / job_id
+    assert len(list((EXPORTS_DIR).iterdir())) == 1, "one export dir per job, not per poll"
+
+
+def test_expire_removes_the_export_directory(tmp_path, monkeypatch):
+    """Exports share the job's lifetime. Left behind, they would accumulate for
+    the life of the deployment on a box with no spare disk."""
+    import time as _time
+
+    app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
+
+    from autoace.config import EXPORTS_DIR, JOB_TTL_SECONDS
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    (batch / "a.ogg").write_bytes(b"stub")
+    (batch / "m.csv").write_text("name,result_json\na.ogg,\n", encoding="utf-8")
+
+    job_id, _ = app_module.enqueue_batch(str(batch))
+    app_module.poll_job(job_id)
+    assert (EXPORTS_DIR / job_id).exists()
+
+    conn = jobs_module.connect()
+    try:
+        removed = jobs_module.expire(conn, now=_time.time() + JOB_TTL_SECONDS + 1.0)
+    finally:
+        conn.close()
+
+    assert removed == 1
+    assert not (EXPORTS_DIR / job_id).exists()

@@ -222,6 +222,11 @@ def reference_call(name: str) -> str:
 DATA_DIR = Path(os.environ.get("AUTOACE_DATA_DIR", REPO_ROOT / "_data"))
 JOBS_DB = DATA_DIR / "jobs.db"
 UPLOAD_DIR = DATA_DIR / "uploads"
+# One export directory per job, overwritten in place on each poll. A fresh
+# mkdtemp per poll leaked a directory every UI_POLL_SECONDS for as long as a
+# tab stayed open - over 1000 of them across an 87-minute batch, and it kept
+# growing after the job finished because the timer does not stop.
+EXPORTS_DIR = DATA_DIR / "exports"
 
 # Weights that are not fetched through HF_HOME land here. speechbrain's
 # `savedir` is resolved relative to the CURRENT WORKING DIRECTORY, so a bare
@@ -235,8 +240,12 @@ JOB_TTL_SECONDS = 7 * 24 * 3600   # DERIVED — results kept until download. Aud
 MAX_ATTEMPTS = 2                  # DERIVED — breaks the OOM crash loop. reconcile()
                                   # alone would requeue an OOM-killed file forever.
 STALE_RUNNING_SECONDS = 900.0     # DERIVED — 5.6x the slowest measured file (160.8s)
-WORKER_POLL_SECONDS = 2.0
-UI_POLL_SECONDS = 5.0
+WORKER_POLL_SECONDS = 2.0          # DERIVED — idle poll interval; well under the
+                                   # ~105s it takes to process one file, so the
+                                   # queue never sits idle noticeably.
+UI_POLL_SECONDS = 5.0              # DERIVED — refresh cadence. Each tick is one
+                                   # SQLite read, so this is cheap; it only needs
+                                   # to feel live against ~105s per file.
 MEAN_SECONDS_PER_FILE = 105.0     # MEASURED — mean of the three provided calls
                                   # (58.2/58.7/129.8s) x the 1.18 two-thread penalty
 MAX_UPLOAD_MB = 500               # DERIVED — 50 files at the largest provided call

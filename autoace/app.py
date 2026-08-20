@@ -36,7 +36,13 @@ from pathlib import Path
 import gradio as gr
 
 from autoace import jobs
-from autoace.config import MAX_UPLOAD_MB, REVIEW_THRESHOLD, UI_POLL_SECONDS
+from autoace.config import (
+    DATA_DIR,
+    EXPORTS_DIR,
+    MAX_UPLOAD_MB,
+    REVIEW_THRESHOLD,
+    UI_POLL_SECONDS,
+)
 from autoace.eval import load_manifest, score_batch
 from autoace.io_audio import SUPPORTED_SUFFIXES
 from autoace.pipeline import FileResult, analyse_file
@@ -222,7 +228,11 @@ def results_to_table(results: list[FileResult]) -> list[list]:
             )
         else:
             state = "ERROR" if result.error else "queued"
-            rows.append([result.name] + [""] * 8 + [None, state, result.error or ""])
+            # len - 4: filename, then the confidence/flag/notes trio are supplied
+            # explicitly. Derived so adding a column cannot silently produce
+            # a ragged row.
+            blanks = [""] * (len(TABLE_HEADERS) - 4)
+            rows.append([result.name] + blanks + [None, state, result.error or ""])
 
     def sort_key(row):
         flagged = row[-2] in ("REVIEW", "ERROR")
@@ -365,6 +375,25 @@ def enqueue_batch(upload) -> tuple[str, str]:
     return job_id, "\n".join(lines)
 
 
+def _write_exports(job_id: str, results: list[FileResult]) -> tuple[str, str]:
+    """Write results.csv / results.json to a stable per-job directory.
+
+    Deliberately NOT `tempfile.mkdtemp`. `poll_job` runs on every `gr.Timer`
+    tick, so a fresh temp directory per call leaked one every
+    UI_POLL_SECONDS for as long as a tab stayed open - more than a thousand
+    across an 87-minute batch, and still growing afterwards because the timer
+    keeps firing once a job is complete. Overwriting one directory per job
+    bounds it, and `jobs.expire` removes it with the job row.
+    """
+    out_dir = EXPORTS_DIR / job_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / "results.csv"
+    json_path = out_dir / "results.json"
+    csv_path.write_text(results_to_csv(results), encoding="utf-8")
+    json_path.write_text(results_to_json(results), encoding="utf-8")
+    return str(csv_path), str(json_path)
+
+
 def _format_eta(seconds: float) -> str:
     minutes = int(seconds // 60)
     if minutes < 1:
@@ -422,11 +451,7 @@ def poll_job(job_id: str):
 
     table = results_to_table(results)
 
-    out_dir = Path(tempfile.mkdtemp(prefix="autoace_out_"))
-    csv_path = out_dir / "results.csv"
-    json_path = out_dir / "results.json"
-    csv_path.write_text(results_to_csv(results), encoding="utf-8")
-    json_path.write_text(results_to_json(results), encoding="utf-8")
+    csv_path, json_path = _write_exports(job_id, results)
 
     scoring_text = ""
     if status.manifest_labelled and status.status == "complete" and status.manifest_csv:
@@ -547,4 +572,7 @@ if __name__ == "__main__":
         server_port=int(os.environ.get("PORT", "7860")),
         auth=(user, password),
         max_file_size=f"{MAX_UPLOAD_MB}mb",
+        # Exports live under DATA_DIR now (see _write_exports), so gradio has
+        # to be allowed to serve from there.
+        allowed_paths=[str(DATA_DIR)],
     )
