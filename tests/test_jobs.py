@@ -143,3 +143,74 @@ def test_enqueue_rolls_back_completely_on_a_mid_flight_failure(conn, tmp_path, m
         conn, workdir=workdir2, audio_by_name=paths2,
         validation_json="{}", manifest_labelled=False,
     )
+
+
+def test_claim_returns_a_pending_file_and_marks_it_running(conn, tmp_path):
+    workdir, paths = _make_audio(tmp_path, "a.ogg")
+    job_id = jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+
+    claimed = jobs.claim_next(conn)
+    assert claimed is not None
+    assert claimed.job_id == job_id
+    assert claimed.name == "a.ogg"
+    assert claimed.audio_path == str(paths["a.ogg"].resolve())
+
+    row = conn.execute(
+        "SELECT status, started_at FROM files WHERE job_id=? AND name=?",
+        (job_id, "a.ogg"),
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["started_at"] is not None
+
+
+def test_claim_is_exclusive(conn, tmp_path):
+    """Two successive claims must never hand out the same row. This is what
+    makes the design correct for more than one worker even though we run one."""
+    workdir, paths = _make_audio(tmp_path, "a.ogg", "b.ogg")
+    jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+
+    first = jobs.claim_next(conn)
+    second = jobs.claim_next(conn)
+    third = jobs.claim_next(conn)
+
+    assert {first.name, second.name} == {"a.ogg", "b.ogg"}
+    assert third is None, "queue is drained; a third claim must return None"
+
+
+def test_claim_increments_attempts_at_claim_time(conn, tmp_path):
+    """attempts must rise when the row is handed out, NOT when it fails.
+
+    A worker killed by the OOM killer never runs any Python, so a
+    failure-time increment would leave attempts at 0 forever and reconcile()
+    would requeue the same file indefinitely.
+    """
+    workdir, paths = _make_audio(tmp_path, "a.ogg")
+    job_id = jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+
+    jobs.claim_next(conn)
+    assert conn.execute(
+        "SELECT attempts FROM files WHERE job_id=? AND name=?", (job_id, "a.ogg")
+    ).fetchone()["attempts"] == 1
+
+
+def test_claim_marks_the_job_running(conn, tmp_path):
+    """A job must not stay `pending` once work has started, or the UI would
+    report a queued job that is actually in progress."""
+    workdir, paths = _make_audio(tmp_path, "a.ogg")
+    job_id = jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+    jobs.claim_next(conn)
+    assert conn.execute(
+        "SELECT status FROM jobs WHERE job_id=?", (job_id,)
+    ).fetchone()["status"] == "running"

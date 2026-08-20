@@ -15,6 +15,7 @@ from __future__ import annotations
 import sqlite3
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 from autoace.config import (
@@ -165,3 +166,52 @@ def enqueue_failed(
         ),
     )
     return job_id
+
+
+@dataclass(frozen=True)
+class ClaimedFile:
+    job_id: str
+    name: str
+    audio_path: str
+    attempts: int
+
+
+def claim_next(conn: sqlite3.Connection) -> ClaimedFile | None:
+    """Atomically take the oldest pending file and mark it running.
+
+    `BEGIN IMMEDIATE` takes the write lock before the SELECT, so the
+    select-then-update pair cannot interleave with another worker's. Ordering
+    by rowid makes the queue FIFO across jobs, which is what the UI's queue
+    position reports.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            "SELECT job_id, name, audio_path, attempts FROM files"
+            " WHERE status='pending' ORDER BY rowid LIMIT 1"
+        ).fetchone()
+        if row is None:
+            conn.execute("COMMIT")
+            return None
+
+        attempts = row["attempts"] + 1
+        conn.execute(
+            "UPDATE files SET status='running', attempts=?, started_at=?"
+            " WHERE job_id=? AND name=?",
+            (attempts, _now(), row["job_id"], row["name"]),
+        )
+        conn.execute(
+            "UPDATE jobs SET status='running' WHERE job_id=? AND status='pending'",
+            (row["job_id"],),
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+    return ClaimedFile(
+        job_id=row["job_id"],
+        name=row["name"],
+        audio_path=row["audio_path"],
+        attempts=attempts,
+    )
