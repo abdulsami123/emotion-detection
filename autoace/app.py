@@ -307,7 +307,9 @@ def enqueue_batch(upload) -> tuple[str, str]:
         matched_audio = {name: audio_by_name[name] for name in validation.matched}
 
         manifest_labelled = False
+        manifest_csv = None
         if validation.manifest_path is not None:
+            manifest_csv = validation.manifest_path.read_text(encoding="utf-8")
             manifest_labelled = any(
                 row.expected is not None
                 for row in load_manifest(str(validation.manifest_path))
@@ -319,6 +321,7 @@ def enqueue_batch(upload) -> tuple[str, str]:
             audio_by_name=matched_audio,
             validation_json=validation_json,
             manifest_labelled=manifest_labelled,
+            manifest_csv=manifest_csv,
         )
     finally:
         conn.close()
@@ -411,15 +414,23 @@ def poll_job(job_id: str):
     json_path.write_text(results_to_json(results), encoding="utf-8")
 
     scoring_text = ""
-    if status.manifest_labelled and status.status == "complete":
-        # The manifest lives in the workdir, which is removed when the job
-        # finishes - so metrics cannot be computed here yet. Task 12 persists
-        # the manifest on the job row and replaces this with real scoring. An
-        # explicit message beats a silently missing feature.
-        scoring_text = (
-            "Scoring for a labelled batch is computed once the manifest is "
-            "persisted with the job (see the implementation plan, Task 12)."
-        )
+    if status.manifest_labelled and status.status == "complete" and status.manifest_csv:
+        # load_manifest reads a path, and the original manifest went away with
+        # the workdir - so round-trip the persisted text through a temp file
+        # rather than duplicating the CSV parsing here.
+        manifest_dir = Path(tempfile.mkdtemp(prefix="autoace_manifest_"))
+        manifest_file = manifest_dir / "manifest.csv"
+        manifest_file.write_text(status.manifest_csv, encoding="utf-8")
+        try:
+            manifest_rows = load_manifest(str(manifest_file))
+            predictions = {
+                r.name: r.analysis for r in results if r.analysis is not None
+            }
+            if predictions:
+                metrics = score_batch(manifest_rows, predictions)
+                scoring_text = json.dumps(metrics, indent=2, default=str)
+        finally:
+            shutil.rmtree(manifest_dir, ignore_errors=True)
 
     return "\n".join(lines), table, str(csv_path), str(json_path), scoring_text
 

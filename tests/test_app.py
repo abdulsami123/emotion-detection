@@ -313,3 +313,70 @@ def test_poll_job_shows_a_queue_estimate_while_work_is_outstanding(tmp_path, mon
     status_md, *_ = app_module.poll_job(job_id)
 
     assert "min" in status_md.lower() or "remaining" in status_md.lower()
+
+
+def test_scoring_view_renders_after_the_workdir_is_gone(tmp_path, monkeypatch):
+    """The manifest lives in the workdir, which is deleted when the job
+    finishes. Scoring a labelled batch must still work afterwards, so the
+    manifest text is persisted on the job row."""
+    import json as _json
+
+    app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
+
+    from autoace.pipeline import FileResult
+
+    expected_json = _analysis().model_dump_json()
+    # Embed the JSON in a CSV cell: double the inner quotes, wrap in quotes.
+    cell = '"' + expected_json.replace('"', '""') + '"'
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    (batch / "a.ogg").write_bytes(b"stub")
+    (batch / "m.csv").write_text(
+        f"name,result_json\na.ogg,{cell}\n", encoding="utf-8"
+    )
+
+    job_id, _ = app_module.enqueue_batch(str(batch))
+
+    conn = jobs_module.connect()
+    try:
+        claimed = jobs_module.claim_next(conn)
+        jobs_module.complete(
+            conn, claimed, FileResult(name=claimed.name, analysis=_analysis())
+        )
+        assert jobs_module.job_status(conn, job_id).status == "complete"
+    finally:
+        conn.close()
+
+    status_md, rows, csv_path, json_path, scoring = app_module.poll_job(job_id)
+
+    assert scoring, "a labelled batch must render metrics"
+    metrics = _json.loads(scoring)
+    assert isinstance(metrics, dict) and metrics, "metrics must be real, not a message"
+
+
+def test_scoring_view_stays_empty_for_an_unlabelled_batch(tmp_path, monkeypatch):
+    """An unlabelled hidden test set has no ground truth, so there is nothing
+    to score and nothing should be implied."""
+    app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
+
+    from autoace.pipeline import FileResult
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    (batch / "a.ogg").write_bytes(b"stub")
+    (batch / "m.csv").write_text("name,result_json\na.ogg,\n", encoding="utf-8")
+
+    job_id, _ = app_module.enqueue_batch(str(batch))
+
+    conn = jobs_module.connect()
+    try:
+        claimed = jobs_module.claim_next(conn)
+        jobs_module.complete(
+            conn, claimed, FileResult(name=claimed.name, analysis=_analysis())
+        )
+    finally:
+        conn.close()
+
+    _, _, _, _, scoring = app_module.poll_job(job_id)
+    assert scoring == ""

@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     manifest_labelled INTEGER NOT NULL,
     workdir           TEXT NOT NULL,
     validation_json   TEXT NOT NULL,
+    manifest_csv      TEXT,
     error             TEXT
 );
 
@@ -96,6 +97,7 @@ def enqueue(
     audio_by_name: dict[str, Path],
     validation_json: str,
     manifest_labelled: bool,
+    manifest_csv: str | None = None,
 ) -> str:
     """Insert one job row plus one `pending` file row per matched audio file.
 
@@ -103,6 +105,11 @@ def enqueue(
     rows, unlisted audio, unsupported formats) survives a page reload - the
     evaluator must be able to come back to a job and still see why files were
     skipped.
+
+    `manifest_csv` persists the manifest's own text on the job row: the
+    workdir it was uploaded into is deleted the moment the job completes (see
+    `_finalise_sql`), so labelled-batch scoring would otherwise vanish at
+    exactly the moment there is a finished result to score.
     """
     job_id = str(uuid.uuid4())
     now = _now()
@@ -114,8 +121,8 @@ def enqueue(
     try:
         conn.execute(
             "INSERT INTO jobs (job_id, status, created_at, expires_at, total_files,"
-            " manifest_labelled, workdir, validation_json)"
-            " VALUES (?, 'pending', ?, ?, ?, ?, ?, ?)",
+            " manifest_labelled, workdir, validation_json, manifest_csv)"
+            " VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?)",
             (
                 job_id,
                 now,
@@ -124,6 +131,7 @@ def enqueue(
                 int(manifest_labelled),
                 str(Path(workdir).resolve()),
                 validation_json,
+                manifest_csv,
             ),
         )
         conn.executemany(
@@ -486,6 +494,7 @@ class JobStatus:
     pending: int
     manifest_labelled: bool
     validation_json: str
+    manifest_csv: str | None
     error: str | None
     queue_position: int
     eta_seconds: float
@@ -536,6 +545,7 @@ def job_status(conn: sqlite3.Connection, job_id: str) -> JobStatus | None:
         pending=counts["pending"],
         manifest_labelled=bool(job["manifest_labelled"]),
         validation_json=job["validation_json"],
+        manifest_csv=job["manifest_csv"],
         error=job["error"],
         queue_position=ahead_jobs,
         eta_seconds=ahead_files * MEAN_SECONDS_PER_FILE,
