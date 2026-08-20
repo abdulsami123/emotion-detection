@@ -1009,6 +1009,70 @@ def reconcile(
     return requeued, failed
 ```
 
+### Step 3b: Add the orphan-job sweep
+
+**Added after review of Tasks 4–5 confirmed a real defect.** `complete()` and `fail()` are now atomic in SQL, but their filesystem work necessarily follows the commit — so a crash in that narrow window leaves a job marked `complete` whose workdir was never removed, and (for any row written before the atomicity fix) a job stuck at `running` with zero outstanding files. Neither is detectable by the sweep above, which only looks at `running` **file** rows.
+
+Append to `reconcile`, before the `return`:
+
+```python
+    # Safety net. Two states the file-row sweep above cannot see:
+    #   - a job left at pending/running with no outstanding files, from a crash
+    #     between a file update and its finalisation (possible for rows written
+    #     before complete()/fail() became atomic);
+    #   - a job already marked complete whose workdir removal did not happen,
+    #     because the filesystem work necessarily follows the SQL commit.
+    # Both leave confidential staged audio on disk, so the sweep is a privacy
+    # measure, not only a bookkeeping one.
+    for row in conn.execute(
+        "SELECT job_id FROM jobs WHERE status IN ('pending','running')"
+        " AND job_id NOT IN (SELECT job_id FROM files"
+        "                    WHERE status IN ('pending','running'))"
+    ).fetchall():
+        workdir = _finalise_sql(conn, row["job_id"])
+        _remove_workdir(workdir)
+        orphaned += 1
+
+    for row in conn.execute(
+        "SELECT job_id, workdir FROM jobs WHERE status='complete' AND workdir<>''"
+    ).fetchall():
+        if Path(row["workdir"]).exists():
+            _remove_workdir(row["workdir"])
+```
+
+Initialise `orphaned = 0` alongside `requeued` and `failed`, and return `(requeued, failed, orphaned)`. Update `test_reconcile_*` assertions and `worker.run_forever`'s startup log accordingly — the tuple is now three-wide.
+
+Add this test:
+
+```python
+def test_reconcile_finalises_a_job_orphaned_at_running(conn, tmp_path):
+    """A crash between a file update and its finalisation leaves a job at
+    `running` with zero outstanding files - invisible to the running-file
+    sweep, and leaving confidential audio on disk. Reconcile must repair it."""
+    workdir, paths = _make_audio(tmp_path, "a.ogg")
+    job_id = jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+    claimed = jobs.claim_next(conn)
+    # Simulate the crash: mark the file done WITHOUT finalising the job.
+    conn.execute(
+        "UPDATE files SET status='done' WHERE job_id=? AND name=?",
+        (job_id, claimed.name),
+    )
+    assert conn.execute(
+        "SELECT status FROM jobs WHERE job_id=?", (job_id,)
+    ).fetchone()["status"] == "running"
+
+    requeued, failed, orphaned = jobs.reconcile(conn, stale_after=0.0)
+
+    assert (requeued, failed, orphaned) == (0, 0, 1)
+    assert conn.execute(
+        "SELECT status FROM jobs WHERE job_id=?", (job_id,)
+    ).fetchone()["status"] == "complete"
+    assert not workdir.exists(), "the orphaned job's audio must be cleaned up"
+```
+
 Merge `MAX_ATTEMPTS` and `STALE_RUNNING_SECONDS` into the existing `from autoace.config import ...` line rather than adding a second import statement.
 
 - [ ] **Step 4: Run the tests to verify they pass**
