@@ -1,0 +1,11 @@
+# Everything under deploy/ is consumed by Linux on the Oracle ARM VM, never by
+# Windows. A CRLF in a shell script fails as `bash: $'\r': command not found`,
+# which is an obscure way to break a deploy, and systemd is only tolerant of
+# CRLF by accident. This repo is developed on Windows with core.autocrlf=true,
+# which stored CRLF directly in the blobs - pin LF so the cloner's local
+# settings cannot reintroduce it.
+deploy/**       text eol=lf
+*.sh            text eol=lf
+*.service       text eol=lf
+*.timer         text eol=lf
+Caddyfile       text eol=lf
