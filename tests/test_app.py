@@ -221,3 +221,95 @@ def test_enqueue_batch_warns_about_unmatched_files_but_still_queues(tmp_path, mo
     assert job_id
     assert "missing.ogg" in status, "a manifest row with no audio must be named"
     assert "orphan.ogg" in status, "audio with no manifest row must be named"
+
+
+def test_poll_job_projects_rows_into_the_existing_table_shape(tmp_path, monkeypatch):
+    """poll_job must feed the untouched results_to_table, so the review queue
+    keeps sorting flagged rows to the top."""
+    app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
+
+    from autoace.pipeline import FileResult
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    (batch / "a.ogg").write_bytes(b"stub")
+    (batch / "b.ogg").write_bytes(b"stub")
+    (batch / "m.csv").write_text(
+        "name,result_json\na.ogg,\nb.ogg,\n", encoding="utf-8"
+    )
+
+    job_id, _ = app_module.enqueue_batch(str(batch))
+
+    conn = jobs_module.connect()
+    try:
+        first = jobs_module.claim_next(conn)
+        jobs_module.complete(
+            conn, first,
+            FileResult(
+                name=first.name, analysis=_analysis(confidence=0.4),
+                reasoning="nli fallback", review_flagged=True,
+            ),
+        )
+    finally:
+        conn.close()
+
+    status_md, rows, csv_path, json_path, scoring = app_module.poll_job(job_id)
+
+    assert "1" in status_md
+    # Index-agnostic on purpose: a later task adds three columns, and a test
+    # coupled to a column position would break for a reason unrelated to what
+    # it asserts.
+    assert len(rows) == 2, "both the finished and the pending file must appear"
+    assert any("REVIEW" in str(cell) for cell in rows[0]), "flagged rows sort first"
+    assert csv_path and Path(csv_path).exists()
+    assert json_path and Path(json_path).exists()
+
+
+def test_poll_job_reports_an_unknown_id_without_raising(tmp_path, monkeypatch):
+    app_module, _ = _reload_modules(monkeypatch, tmp_path)
+
+    status_md, rows, csv_path, json_path, scoring = app_module.poll_job("nope")
+
+    assert "not found" in status_md.lower()
+    assert rows == []
+    assert csv_path is None and json_path is None
+
+
+def test_poll_job_with_no_id_is_a_no_op(tmp_path, monkeypatch):
+    """The UI timer fires before anything is queued; that must be harmless."""
+    app_module, _ = _reload_modules(monkeypatch, tmp_path)
+
+    status_md, rows, csv_path, json_path, scoring = app_module.poll_job("")
+    assert rows == []
+    assert csv_path is None
+
+
+def test_poll_job_surfaces_a_validation_failure(tmp_path, monkeypatch):
+    """A failed batch looked up by ID must still explain itself."""
+    app_module, _ = _reload_modules(monkeypatch, tmp_path)
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    (batch / "a.ogg").write_bytes(b"stub")
+
+    job_id, _ = app_module.enqueue_batch(str(batch))
+    status_md, rows, csv_path, json_path, scoring = app_module.poll_job(job_id)
+
+    assert "manifest" in status_md.lower()
+    assert rows == []
+
+
+def test_poll_job_shows_a_queue_estimate_while_work_is_outstanding(tmp_path, monkeypatch):
+    """One worker means a second batch genuinely waits. A silent wait looks
+    like a hang, so the panel must show progress or an estimate."""
+    app_module, _ = _reload_modules(monkeypatch, tmp_path)
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    (batch / "a.ogg").write_bytes(b"stub")
+    (batch / "m.csv").write_text("name,result_json\na.ogg,\n", encoding="utf-8")
+
+    job_id, _ = app_module.enqueue_batch(str(batch))
+    status_md, *_ = app_module.poll_job(job_id)
+
+    assert "min" in status_md.lower() or "remaining" in status_md.lower()

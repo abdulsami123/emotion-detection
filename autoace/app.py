@@ -336,6 +336,94 @@ def enqueue_batch(upload) -> tuple[str, str]:
     return job_id, "\n".join(lines)
 
 
+def _format_eta(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    if minutes < 1:
+        return "under a minute"
+    if minutes < 60:
+        return f"~{minutes} min"
+    return f"~{minutes // 60}h {minutes % 60:02d}m"
+
+
+def poll_job(job_id: str):
+    """Read-only projection of the store for the UI.
+
+    Returns `(status_markdown, table_rows, csv_path, json_path, scoring_text)`
+    - the same five outputs the old synchronous `run_batch` returned, so the
+    Blocks wiring keeps the same shape.
+    """
+    empty = ("", [], None, None, "")
+    if not job_id:
+        return empty
+
+    conn = jobs.connect()
+    try:
+        status = jobs.job_status(conn, job_id)
+        if status is None:
+            return (
+                f"Job `{job_id}` not found. It may have expired.", [], None, None, "",
+            )
+
+        results = jobs.job_results(conn, job_id)
+        validation = json.loads(status.validation_json or "{}")
+    finally:
+        conn.close()
+
+    if status.status == "failed" and status.total == 0:
+        return (status.error or "Validation failed.", [], None, None, "")
+
+    lines = [
+        f"**Job** `{job_id}` — **{status.status}**",
+        "",
+        f"{status.finished} of {status.total} files finished "
+        f"({status.done} analysed, {status.failed} failed).",
+    ]
+    if status.status in ("pending", "running"):
+        if status.queue_position:
+            lines.append(
+                f"Queued behind {status.queue_position} other job(s). "
+                f"Estimated wait: {_format_eta(status.eta_seconds)}."
+            )
+        else:
+            lines.append(
+                f"Estimated time remaining: {_format_eta(status.eta_seconds)}."
+            )
+    for problem in validation.get("problems", []):
+        lines.append(f"- {problem}")
+
+    # `results_to_table`'s ERROR branch fires on `analysis is None` alone, with
+    # no way to tell "actually failed" from "not processed yet" - correct for
+    # a finished batch, wrong here: an unclaimed file would rank as an error
+    # ahead of a genuinely REVIEW-flagged completed row. So the still-
+    # outstanding (pending/running) rows are kept out of that sort and
+    # appended after, tagged PENDING rather than ERROR.
+    finished = [r for r in results if r.analysis is not None or r.error]
+    outstanding = [r for r in results if r.analysis is None and not r.error]
+    table = results_to_table(finished)
+    table.extend(
+        [r.name, "", "", "", "", "", None, "PENDING", ""] for r in outstanding
+    )
+
+    out_dir = Path(tempfile.mkdtemp(prefix="autoace_out_"))
+    csv_path = out_dir / "results.csv"
+    json_path = out_dir / "results.json"
+    csv_path.write_text(results_to_csv(results), encoding="utf-8")
+    json_path.write_text(results_to_json(results), encoding="utf-8")
+
+    scoring_text = ""
+    if status.manifest_labelled and status.status == "complete":
+        # The manifest lives in the workdir, which is removed when the job
+        # finishes - so metrics cannot be computed here yet. Task 12 persists
+        # the manifest on the job row and replaces this with real scoring. An
+        # explicit message beats a silently missing feature.
+        scoring_text = (
+            "Scoring for a labelled batch is computed once the manifest is "
+            "persisted with the job (see the implementation plan, Task 12)."
+        )
+
+    return "\n".join(lines), table, str(csv_path), str(json_path), scoring_text
+
+
 def build_app() -> gr.Blocks:
     """The UI. Construction only - never calls `.launch()`."""
     with gr.Blocks(title="AutoAce - Call Tone Review") as demo:
