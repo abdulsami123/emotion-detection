@@ -405,3 +405,133 @@ def test_claim_next_rolls_back_and_leaves_the_lock_released(conn, tmp_path, monk
     assert conn.execute("SELECT status, attempts FROM files").fetchone()["status"] == "pending"
     claimed = jobs.claim_next(conn)
     assert claimed is not None and claimed.attempts == 1
+
+
+def test_reconcile_resets_stale_running_to_pending(conn, tmp_path):
+    """A worker killed mid-file leaves a `running` row nobody owns. On
+    startup it must go back in the queue - completed rows are already durable,
+    so the worst case is one file re-run."""
+    workdir, paths = _make_audio(tmp_path, "a.ogg")
+    job_id = jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+    jobs.claim_next(conn)
+
+    requeued, failed, orphaned = jobs.reconcile(conn, stale_after=0.0)
+
+    assert (requeued, failed, orphaned) == (1, 0, 0)
+    assert conn.execute(
+        "SELECT status FROM files WHERE job_id=? AND name=?", (job_id, "a.ogg")
+    ).fetchone()["status"] == "pending"
+
+
+def test_reconcile_fails_a_row_past_max_attempts(conn, tmp_path):
+    """The OOM crash-loop guard. If the fallback path pushes the worker past
+    available RAM, the OOM killer takes it mid-file, reconcile requeues it, and
+    it dies again on the same file - forever. MAX_ATTEMPTS breaks that."""
+    from autoace.config import MAX_ATTEMPTS
+
+    workdir, paths = _make_audio(tmp_path, "a.ogg")
+    job_id = jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+
+    for _ in range(MAX_ATTEMPTS):
+        assert jobs.claim_next(conn) is not None
+        jobs.reconcile(conn, stale_after=0.0)
+
+    row = conn.execute(
+        "SELECT status, attempts, error FROM files WHERE job_id=? AND name=?",
+        (job_id, "a.ogg"),
+    ).fetchone()
+    assert row["status"] == "failed"
+    assert row["attempts"] == MAX_ATTEMPTS
+    assert "attempt" in (row["error"] or "").lower()
+    assert jobs.claim_next(conn) is None, "an exhausted file must not be reissued"
+
+
+def test_reconcile_leaves_a_fresh_running_row_alone(conn, tmp_path):
+    """A file legitimately in progress must not be yanked out from under the
+    worker by a periodic sweep."""
+    workdir, paths = _make_audio(tmp_path, "a.ogg")
+    jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+    jobs.claim_next(conn)
+
+    requeued, failed, orphaned = jobs.reconcile(conn, stale_after=900.0)
+
+    assert (requeued, failed, orphaned) == (0, 0, 0)
+    assert conn.execute("SELECT status FROM files").fetchone()["status"] == "running"
+
+
+def test_reconcile_finalises_a_job_whose_last_file_it_failed(conn, tmp_path):
+    """If reconcile is what exhausts the final file, it must still close the
+    job - otherwise the job sits at `running` forever with nothing to run."""
+    from autoace.config import MAX_ATTEMPTS
+
+    workdir, paths = _make_audio(tmp_path, "a.ogg")
+    job_id = jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+    for _ in range(MAX_ATTEMPTS):
+        jobs.claim_next(conn)
+        jobs.reconcile(conn, stale_after=0.0)
+
+    assert conn.execute(
+        "SELECT status FROM jobs WHERE job_id=?", (job_id,)
+    ).fetchone()["status"] == "complete"
+
+
+def test_reconcile_finalises_a_job_orphaned_at_running(conn, tmp_path):
+    """A crash between a file update and its finalisation leaves a job at
+    `running` with zero outstanding files - invisible to the running-file
+    sweep, and leaving confidential audio on disk. Reconcile must repair it."""
+    workdir, paths = _make_audio(tmp_path, "a.ogg")
+    job_id = jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+    claimed = jobs.claim_next(conn)
+    # Simulate the crash: mark the file done WITHOUT finalising the job.
+    conn.execute(
+        "UPDATE files SET status='done' WHERE job_id=? AND name=?",
+        (job_id, claimed.name),
+    )
+    assert conn.execute(
+        "SELECT status FROM jobs WHERE job_id=?", (job_id,)
+    ).fetchone()["status"] == "running"
+
+    requeued, failed, orphaned = jobs.reconcile(conn, stale_after=0.0)
+
+    assert (requeued, failed, orphaned) == (0, 0, 1)
+    assert conn.execute(
+        "SELECT status FROM jobs WHERE job_id=?", (job_id,)
+    ).fetchone()["status"] == "complete"
+    assert not workdir.exists(), "the orphaned job's audio must be cleaned up"
+
+
+def test_reconcile_retries_a_surviving_workdir_on_a_complete_job(conn, tmp_path):
+    """The filesystem half of finalisation follows the SQL commit, so a crash
+    in that window leaves a `complete` job with its audio still on disk. The
+    sweep must pick it up on the next pass."""
+    workdir, paths = _make_audio(tmp_path, "a.ogg")
+    job_id = jobs.enqueue(
+        conn, workdir=workdir, audio_by_name=paths,
+        validation_json="{}", manifest_labelled=False,
+    )
+    claimed = jobs.claim_next(conn)
+    jobs.complete(conn, claimed, FileResult(name=claimed.name, analysis=_analysis()))
+    assert not workdir.exists()
+
+    # Recreate it, as a crash between COMMIT and rmtree would have left it.
+    workdir.mkdir(parents=True)
+    (workdir / "leftover.ogg").write_bytes(b"confidential")
+
+    jobs.reconcile(conn, stale_after=0.0)
+
+    assert not workdir.exists(), "a surviving workdir must be removed on sweep"

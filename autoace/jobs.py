@@ -25,6 +25,8 @@ from autoace.config import (
     JOBS_CONNECT_TIMEOUT_S,
     JOBS_DB,
     JOB_TTL_SECONDS,
+    MAX_ATTEMPTS,
+    STALE_RUNNING_SECONDS,
 )
 
 log = logging.getLogger("autoace.jobs")
@@ -342,3 +344,103 @@ def fail(conn: sqlite3.Connection, claimed: ClaimedFile, error: str) -> None:
 
     _remove_audio(audio_path)
     _remove_workdir(workdir)
+
+
+def reconcile(
+    conn: sqlite3.Connection,
+    stale_after: float = STALE_RUNNING_SECONDS,
+    now: float | None = None,
+) -> tuple[int, int, int]:
+    """Repair state left behind by an interrupted worker.
+
+    Returns `(requeued, failed, orphaned)`.
+
+    The worker calls this at startup with `stale_after=0.0`: it is the only
+    worker, so nothing can legitimately be running. The default threshold
+    exists for a periodic sweep and for tests that need a fresh row left alone.
+
+    Three distinct repairs, because they are not visible to each other:
+      - a `running` FILE row nobody owns goes back to `pending`;
+      - a row past MAX_ATTEMPTS is abandoned, which is what stops an
+        OOM-killed file from being requeued into the same OOM forever;
+      - a JOB with no outstanding files is finalised, and a `complete` job
+        whose workdir survived is swept again. Both of those leave
+        confidential staged audio on disk, so the sweep is a privacy measure
+        and not only bookkeeping.
+
+    All SQL runs in one transaction; the filesystem work follows the commit,
+    since an rmtree cannot be rolled back.
+    """
+    now = _now() if now is None else now
+    cutoff = now - stale_after
+
+    requeued = failed = orphaned = 0
+    audio_to_remove: list[str | None] = []
+    workdirs_to_remove: list[str | None] = []
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        stale = conn.execute(
+            "SELECT job_id, name, attempts FROM files"
+            " WHERE status='running' AND (started_at IS NULL OR started_at <= ?)",
+            (cutoff,),
+        ).fetchall()
+
+        touched_jobs = set()
+        for row in stale:
+            touched_jobs.add(row["job_id"])
+            if row["attempts"] >= MAX_ATTEMPTS:
+                conn.execute(
+                    "UPDATE files SET status='failed', error=?, finished_at=?"
+                    " WHERE job_id=? AND name=?",
+                    (
+                        f"abandoned after {row['attempts']} attempts - the worker "
+                        f"died each time without recording a result (likely out "
+                        f"of memory)",
+                        now,
+                        row["job_id"],
+                        row["name"],
+                    ),
+                )
+                audio_to_remove.append(
+                    _clear_audio_path(conn, row["job_id"], row["name"])
+                )
+                failed += 1
+            else:
+                conn.execute(
+                    "UPDATE files SET status='pending', started_at=NULL"
+                    " WHERE job_id=? AND name=?",
+                    (row["job_id"], row["name"]),
+                )
+                requeued += 1
+
+        for job_id in touched_jobs:
+            workdirs_to_remove.append(_finalise_sql(conn, job_id))
+
+        # Jobs with nothing outstanding that were never finalised.
+        for row in conn.execute(
+            "SELECT job_id FROM jobs WHERE status IN ('pending','running')"
+            " AND job_id NOT IN (SELECT job_id FROM files"
+            "                    WHERE status IN ('pending','running'))"
+        ).fetchall():
+            workdirs_to_remove.append(_finalise_sql(conn, row["job_id"]))
+            orphaned += 1
+
+        # Already-complete jobs whose workdir removal did not take effect.
+        for row in conn.execute(
+            "SELECT workdir FROM jobs WHERE status='complete' AND workdir IS NOT NULL"
+            " AND workdir <> ''"
+        ).fetchall():
+            workdirs_to_remove.append(row["workdir"])
+
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+    for path in audio_to_remove:
+        _remove_audio(path)
+    for workdir in workdirs_to_remove:
+        _remove_workdir(workdir)
+
+    return requeued, failed, orphaned
