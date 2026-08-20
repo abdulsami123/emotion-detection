@@ -2483,6 +2483,73 @@ Note `sort_key` now indexes from the end (`row[-2]`, `row[-3]`) rather than hard
 Run: `python -m pytest tests/test_app.py -v`
 Expected: 17 passed. Crucially the original 8 still pass unmodified — `test_review_flagged_rows_are_identifiable_in_the_table` survives because it never indexed the flag column by position.
 
+- [ ] **Step 5b: Delete the `poll_job` row-building duplication**
+
+Task 11 hit a real defect and worked around it: `results_to_table`'s `else` branch labels **any** `analysis is None` row as `ERROR`, with no way to distinguish "genuinely failed" from "not processed yet". Since a pending row sorts with confidence `-1.0`, an unclaimed file outranked a real REVIEW row. The workaround built pending rows inline in `poll_job`:
+
+```python
+finished = [r for r in results if r.analysis is not None or r.error]
+outstanding = [r for r in results if r.analysis is None and not r.error]
+table = results_to_table(finished)
+table += [[r.name, "", "", "", "", "", None, "PENDING", ""] for r in outstanding]
+```
+
+That hard-codes a **9-wide** row, and this task makes the table **12-wide** — so leaving it produces ragged rows, which Gradio mangles silently rather than reporting. The `state = "ERROR" if result.error else "queued"` branch added in Step 4 handles pending correctly *inside* `results_to_table`, so the duplication must go:
+
+```python
+    table = results_to_table(results)
+```
+
+Delete the `finished`/`outstanding` split and the inline row construction, and the comment block explaining them. Row shape now lives in exactly one place.
+
+Update the Task 11 test `test_poll_job_projects_rows_into_the_existing_table_shape` **only** if it asserted on the literal string `"PENDING"`; the `queued` label replaces it. It was written index-agnostically, so the flagged-row assertion still holds.
+
+- [ ] **Step 5c: Pin the row-width invariant across the seam**
+
+```python
+def test_poll_job_rows_all_match_the_header_width(tmp_path, monkeypatch):
+    """Ragged rows are the failure mode Gradio hides: it renders a mangled
+    dataframe rather than raising. Pending and finished rows must be equally
+    wide, which is why row shape lives only in results_to_table."""
+    app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
+
+    from autoace.pipeline import FileResult
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    for name in ("a.ogg", "b.ogg", "c.ogg"):
+        (batch / name).write_bytes(b"stub")
+    (batch / "m.csv").write_text(
+        "name,result_json\na.ogg,\nb.ogg,\nc.ogg,\n", encoding="utf-8"
+    )
+
+    job_id, _ = app_module.enqueue_batch(str(batch))
+
+    conn = jobs_module.connect()
+    try:
+        done = jobs_module.claim_next(conn)
+        jobs_module.complete(
+            conn, done, FileResult(name=done.name, analysis=_analysis())
+        )
+        bad = jobs_module.claim_next(conn)
+        jobs_module.complete(
+            conn, bad,
+            FileResult(name=bad.name, analysis=None, error="could not decode"),
+        )
+        # The third file stays pending.
+    finally:
+        conn.close()
+
+    _, rows, *_ = app_module.poll_job(job_id)
+
+    assert len(rows) == 3, "done, failed and pending must all appear"
+    widths = {len(r) for r in rows}
+    assert widths == {len(app_module.TABLE_HEADERS)}, (
+        f"ragged rows: widths {widths} against "
+        f"{len(app_module.TABLE_HEADERS)} headers"
+    )
+```
+
 - [ ] **Step 6: Verify field coverage mechanically**
 
 Run:
