@@ -240,3 +240,6 @@ JOBS_CONNECT_TIMEOUT_S = 30.0     # DERIVED — how long a writer waits for the 
                                   # longest single-row write.
 JOBS_BUSY_TIMEOUT_MS = 5000       # DERIVED — SQLite-level retry window for the
                                   # same contention, in milliseconds.
+EXPIRY_SWEEP_SECONDS = 3600.0      # DERIVED — hourly is frequent enough against a
+                                  # 7-day TTL, and cheap enough to run inline in
+                                  # the worker's drain loop.
