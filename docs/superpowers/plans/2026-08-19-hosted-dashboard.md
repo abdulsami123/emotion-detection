@@ -45,7 +45,9 @@ Every field maps onto one `files` column, which is why rehydration is lossless a
 | `autoace/config.py` | Modify (append) | New hosting thresholds. Needs `import os` added — it currently imports only `Path`. |
 | `autoace/jobs.py` | **Create** | The SQLite job store. Pure data: no Gradio import, no model import, no audio decoding. This is what makes it CI-safe. |
 | `autoace/worker.py` | **Create** | The drain loop and its entrypoint. The only new file that imports `pipeline`. |
-| `autoace/app.py` | Modify | `run_batch` splits into `enqueue_batch` + `poll_job`. Everything else untouched. |
+| `autoace/app.py` | Modify | `run_batch` splits into `enqueue_batch` + `poll_job`; `TABLE_HEADERS` and `results_to_table` widen to all nine schema fields (Task 13). |
+| `autoace/eval.py` | Modify | `load_manifest` hardened against a BOM, an omitted `result_json` column, and blank rows (Task 14). |
+| `tests/test_manifest.py` | **Create** | 6 manifest-robustness tests. No audio, no weights — CI-safe. |
 | `tests/test_jobs.py` | **Create** | 9 unit tests. No audio, no weights, runs in CI. |
 | `tests/test_worker.py` | **Create** | One `slow` integration test over one real call. |
 | `tests/test_app.py` | Modify (append only) | New tests for enqueue/poll. **Do not touch the existing 8.** |
@@ -1854,7 +1856,10 @@ def test_poll_job_projects_rows_into_the_existing_table_shape(tmp_path, monkeypa
 
     assert "1" in status_md
     assert len(rows) == 2, "both the finished and the pending file must appear"
-    assert rows[0][7] in ("REVIEW", "ERROR"), "flagged rows sort first"
+    # Index-agnostic on purpose: Task 13 adds three columns, and a test coupled
+    # to a column position would break for a reason that has nothing to do with
+    # the behaviour being asserted.
+    assert any("REVIEW" in str(cell) for cell in rows[0]), "flagged rows sort first"
     assert csv_path and Path(csv_path).exists()
     assert json_path and Path(json_path).exists()
 
@@ -2002,7 +2007,7 @@ def poll_job(job_id: str):
     return "\n".join(lines), table, str(csv_path), str(json_path), scoring_text
 ```
 
-**Note on the scoring view:** the manifest lives in the workdir, which is deleted when the job completes. Task 12 fixes this properly by persisting the manifest; this task deliberately leaves an honest message rather than a silently missing feature.
+**Note on the scoring view:** the manifest lives in the workdir, which is deleted when the job completes. Task 14 fixes this properly by persisting the manifest; this task deliberately leaves an honest message rather than a silently missing feature.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -2224,7 +2229,394 @@ git commit -m "feat: persist the manifest so labelled-batch scoring survives cle
 
 ---
 
-## Task 13: The asynchronous UI
+## Task 13: Display all nine schema fields
+
+**Files:**
+- Modify: `autoace/app.py:45-55` (`TABLE_HEADERS`) and `results_to_table`
+- Modify: `tests/test_app.py` (append only)
+
+Brief §7 says: *"Results: Display the prediction for each audio file using the required output schema."* The table currently shows **six** of the nine schema fields. `background_noise_present`, `speaker_overlap_present`, and `long_silence_present` are exported to CSV and JSON but never displayed. §8 puts 10% of the total score on the dashboard, explicitly including "result review", so this is a scored gap rather than a cosmetic one.
+
+The existing `test_review_flagged_rows_are_identifiable_in_the_table` asserts with `rows[0][0]` and an index-agnostic `any(...)`, so widening the table does not break it. Keep it that way — do not add position-coupled assertions.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `tests/test_app.py`:
+
+```python
+def test_table_displays_every_schema_field():
+    """Brief section 7 requires the displayed prediction to use the required
+    output schema. Three boolean fields were exported but never shown:
+    background_noise_present, speaker_overlap_present, long_silence_present.
+    """
+    from autoace.app import SCHEMA_COLUMNS, TABLE_HEADERS, results_to_table
+
+    rows = results_to_table(
+        [
+            FileResult(
+                name="a.ogg",
+                analysis=_analysis(
+                    background_noise_present=True,
+                    background_noise_type="office chatter",
+                    background_noise_severity="low",
+                    speaker_overlap_present=True,
+                    long_silence_present=True,
+                ),
+            )
+        ]
+    )
+
+    assert len(rows) == 1
+    assert len(rows[0]) == len(TABLE_HEADERS), (
+        "every row must have exactly one cell per header"
+    )
+
+    # Every schema field must be represented. `name` is the "file" column and
+    # `confidence` is rendered rounded, so compare on the count of schema
+    # fields rather than on header spelling.
+    schema_fields = set(SCHEMA_COLUMNS) - {"name"}
+    assert len(TABLE_HEADERS) >= len(schema_fields) + 1, (
+        f"table shows {len(TABLE_HEADERS)} columns for {len(schema_fields)} "
+        f"schema fields plus the filename"
+    )
+
+    flat = " ".join(str(cell) for cell in rows[0])
+    assert "office chatter" in flat
+    for label in ("noise", "overlap", "silence"):
+        assert any(label in h.lower() for h in TABLE_HEADERS), (
+            f"no column covers {label}"
+        )
+
+
+def test_table_shows_boolean_fields_as_readable_values():
+    """A raw Python True/False in a Gradio dataframe reads poorly next to enum
+    strings; yes/no keeps the row scannable."""
+    from autoace.app import results_to_table
+
+    rows = results_to_table(
+        [
+            FileResult(
+                name="a.ogg",
+                analysis=_analysis(
+                    background_noise_present=False,
+                    speaker_overlap_present=True,
+                    long_silence_present=False,
+                ),
+            )
+        ]
+    )
+    flat = [str(cell) for cell in rows[0]]
+    assert "yes" in flat and "no" in flat
+
+
+def test_error_rows_still_have_one_cell_per_header():
+    """A failed file must not produce a short row - Gradio silently mangles a
+    dataframe whose rows have inconsistent width."""
+    from autoace.app import TABLE_HEADERS, results_to_table
+
+    rows = results_to_table(
+        [FileResult(name="bad.ogg", analysis=None, error="could not decode")]
+    )
+    assert len(rows[0]) == len(TABLE_HEADERS)
+    assert any("ERROR" in str(cell) for cell in rows[0])
+```
+
+- [ ] **Step 2: Run it to make sure it fails**
+
+Run: `python -m pytest tests/test_app.py -k "every_schema_field or readable_values or one_cell_per_header" -v`
+Expected: FAIL — `test_table_displays_every_schema_field` fails on `no column covers overlap`, and `test_table_shows_boolean_fields_as_readable_values` fails because no cell reads `yes`/`no`.
+
+- [ ] **Step 3: Widen `TABLE_HEADERS`**
+
+Replace the `TABLE_HEADERS` block in `autoace/app.py` (currently lines 45–55):
+
+```python
+# One column per schema field plus the filename, the review flag, and the tone
+# path. Brief section 7 requires the DISPLAYED prediction to use the required
+# output schema, so a field that is exported but not shown does not count -
+# background_noise_present, speaker_overlap_present, and long_silence_present
+# were previously missing here.
+TABLE_HEADERS = [
+    "file",
+    "tone",
+    "intensity",
+    "noise?",
+    "noise type",
+    "severity",
+    "quality",
+    "overlap?",
+    "long silence?",
+    "confidence",
+    "flag",
+    "notes",
+]
+```
+
+- [ ] **Step 4: Rewrite `results_to_table` to emit every field**
+
+Replace the whole `results_to_table` function:
+
+```python
+def _yn(value: bool) -> str:
+    """Booleans render as yes/no. A bare True next to enum strings like
+    `slightly_impaired` is hard to scan in a 50-row table."""
+    return "yes" if value else "no"
+
+
+def results_to_table(results: list[FileResult]) -> list[list]:
+    """Display rows for the review queue.
+
+    Review-flagged (or outright failed) rows sort to the top, then ascending
+    confidence - a degraded result must be visible, not buried at the bottom of
+    a 50-row batch.
+
+    Every row has exactly `len(TABLE_HEADERS)` cells, including error rows:
+    Gradio mangles a dataframe with ragged rows rather than complaining.
+    """
+    rows: list[list] = []
+    for result in results:
+        if result.analysis is not None:
+            data = result.analysis.model_dump(mode="json")
+            confidence = data["confidence"]
+            flagged = bool(result.review_flagged) or confidence < REVIEW_THRESHOLD
+            rows.append(
+                [
+                    result.name,
+                    data["emotional_tone"],
+                    data["emotional_intensity"],
+                    _yn(data["background_noise_present"]),
+                    data["background_noise_type"],
+                    data["background_noise_severity"],
+                    data["audio_quality"],
+                    _yn(data["speaker_overlap_present"]),
+                    _yn(data["long_silence_present"]),
+                    round(confidence, 3),
+                    "REVIEW" if flagged else "",
+                    result.reasoning,
+                ]
+            )
+        else:
+            # A pending file and a failed file are different things: a pending
+            # row has no error yet and must not be labelled ERROR.
+            state = "ERROR" if result.error else "queued"
+            rows.append(
+                [result.name] + [""] * 8 + [None, state, result.error or ""]
+            )
+
+    def sort_key(row):
+        flagged = row[-2] in ("REVIEW", "ERROR")
+        confidence = row[-3] if isinstance(row[-3], (int, float)) else -1.0
+        return (0 if flagged else 1, confidence)
+
+    rows.sort(key=sort_key)
+    return rows
+```
+
+Note `sort_key` now indexes from the end (`row[-2]`, `row[-3]`) rather than hard-coded positions 7 and 6 — the previous version would silently sort on the wrong column the moment a column was inserted, which is exactly what just happened.
+
+- [ ] **Step 5: Run the full app suite**
+
+Run: `python -m pytest tests/test_app.py -v`
+Expected: 17 passed. Crucially the original 8 still pass unmodified — `test_review_flagged_rows_are_identifiable_in_the_table` survives because it never indexed the flag column by position.
+
+- [ ] **Step 6: Verify field coverage mechanically**
+
+Run:
+
+```bash
+python -c "
+from autoace.app import SCHEMA_COLUMNS, TABLE_HEADERS
+print('schema fields:', len(SCHEMA_COLUMNS) - 1)
+print('table columns:', len(TABLE_HEADERS))
+assert len(TABLE_HEADERS) == (len(SCHEMA_COLUMNS) - 1) + 3, 'expect 9 fields + file + flag + notes'
+print('every schema field is displayed')
+"
+```
+
+Expected: `schema fields: 9`, `table columns: 12`, then `every schema field is displayed`.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add autoace/app.py tests/test_app.py
+git commit -m "fix: display all nine schema fields in the results table"
+```
+
+---
+
+## Task 14: Manifest robustness for the hidden test set
+
+**Files:**
+- Modify: `autoace/eval.py:28-42` (`load_manifest`)
+- Create: `tests/test_manifest.py`
+
+Brief §7 states the CSV `result_json` column "may be empty or omitted from scoring input" for an unlabeled hidden test set, and that the manifest is what maps every audio file to a row. Two failure modes would take down an entire hidden-set batch, not one file:
+
+1. **A UTF-8 BOM.** `load_manifest` opens with `encoding="utf-8"`, so a CSV saved from Excel — the overwhelmingly common case for an evaluator-supplied file — yields a first fieldname of `﻿name`. `record["name"]` then raises `KeyError`, and the whole batch dies before any inference. `utf-8-sig` strips the BOM.
+2. **A missing or misnamed `name` column** raises a bare `KeyError: 'name'` that surfaces as an unhandled exception rather than a validation message.
+
+This is squarely the brief's failure-handling requirement: a bad *file* must not fail the batch, and a bad *manifest* must at least explain itself.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/test_manifest.py`:
+
+```python
+"""Manifest parsing robustness.
+
+The manifest is a single point of failure for a whole batch: unlike one bad
+audio file, an unreadable manifest means nothing gets processed. These cases
+are all things an evaluator-supplied CSV plausibly does.
+"""
+
+import pytest
+
+from autoace.eval import load_manifest
+
+
+def test_manifest_with_a_utf8_bom_is_readable(tmp_path):
+    """Excel writes UTF-8 with a BOM by default. Opened as plain utf-8 the
+    first fieldname becomes '\\ufeffname', so every row lookup raises KeyError
+    and the entire batch fails before any inference runs."""
+    path = tmp_path / "m.csv"
+    path.write_text("name,result_json\ncall_001.ogg,\n", encoding="utf-8-sig")
+
+    rows = load_manifest(str(path))
+
+    assert [r.name for r in rows] == ["call_001.ogg"]
+    assert rows[0].expected is None
+
+
+def test_manifest_without_a_result_json_column_is_readable(tmp_path):
+    """Brief section 7: for an unlabeled hidden test set result_json 'may be
+    empty or omitted'. An omitted COLUMN must work, not just an empty cell."""
+    path = tmp_path / "m.csv"
+    path.write_text("name\ncall_001.ogg\ncall_002.ogg\n", encoding="utf-8")
+
+    rows = load_manifest(str(path))
+
+    assert [r.name for r in rows] == ["call_001.ogg", "call_002.ogg"]
+    assert all(r.expected is None for r in rows)
+
+
+def test_manifest_missing_the_name_column_raises_a_clear_error(tmp_path):
+    path = tmp_path / "m.csv"
+    path.write_text("filename,result_json\ncall_001.ogg,\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="name"):
+        load_manifest(str(path))
+
+
+def test_manifest_ignores_blank_trailing_rows(tmp_path):
+    """A trailing newline or a row of empty cells is common in hand-edited
+    CSVs and must not become a row named ''."""
+    path = tmp_path / "m.csv"
+    path.write_text("name,result_json\ncall_001.ogg,\n,\n\n", encoding="utf-8")
+
+    rows = load_manifest(str(path))
+
+    assert [r.name for r in rows] == ["call_001.ogg"]
+
+
+def test_manifest_strips_whitespace_around_names(tmp_path):
+    """A name with a stray space would not match the audio file on disk, and
+    would be reported as 'missing audio' for a file that is right there."""
+    path = tmp_path / "m.csv"
+    path.write_text("name,result_json\n  call_001.ogg  ,\n", encoding="utf-8")
+
+    rows = load_manifest(str(path))
+
+    assert [r.name for r in rows] == ["call_001.ogg"]
+
+
+def test_manifest_reports_which_row_has_bad_json(tmp_path):
+    """A malformed result_json cell must name the offending row rather than
+    surfacing a bare JSONDecodeError with no context."""
+    path = tmp_path / "m.csv"
+    path.write_text(
+        'name,result_json\ncall_001.ogg,"{not json}"\n', encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="call_001.ogg"):
+        load_manifest(str(path))
+```
+
+- [ ] **Step 2: Run it to make sure it fails**
+
+Run: `python -m pytest tests/test_manifest.py -v`
+Expected: FAIL. `test_manifest_with_a_utf8_bom_is_readable` fails with `KeyError: 'name'`, and the clear-error tests fail because `KeyError` and `JSONDecodeError` are raised instead of `ValueError`.
+
+- [ ] **Step 3: Harden `load_manifest`**
+
+Replace `load_manifest` in `autoace/eval.py`:
+
+```python
+def load_manifest(path: str) -> list[ManifestRow]:
+    """Read the brief's CSV manifest.
+
+    An empty `result_json` cell - or an entirely absent `result_json` column -
+    means the row is unlabelled (audio provided, no ground truth yet), so
+    `expected` is None rather than raising. Brief section 7 allows exactly
+    that for an unlabeled hidden test set.
+
+    Opened as `utf-8-sig` because a manifest saved from Excel carries a BOM,
+    which under plain `utf-8` turns the first fieldname into '\\ufeffname' and
+    fails EVERY row lookup - taking down the whole batch before any inference
+    runs. The manifest is a single point of failure in a way one bad audio
+    file is not, so its errors name what went wrong.
+    """
+    rows: list[ManifestRow] = []
+    with open(path, newline="", encoding="utf-8-sig") as fh:
+        reader = csv.DictReader(fh)
+        if reader.fieldnames is None:
+            raise ValueError(f"{path}: manifest is empty")
+        if "name" not in reader.fieldnames:
+            raise ValueError(
+                f"{path}: manifest has no 'name' column - found "
+                f"{reader.fieldnames}. The brief requires a 'name' column "
+                f"holding the exact audio filename."
+            )
+
+        for record in reader:
+            name = (record.get("name") or "").strip()
+            if not name:
+                continue  # blank or trailing row
+
+            raw = (record.get("result_json") or "").strip()
+            if not raw:
+                rows.append(ManifestRow(name=name, expected=None))
+                continue
+
+            try:
+                expected = CallAnalysis(**json.loads(raw))
+            except Exception as exc:  # noqa: BLE001 - re-raised with context
+                raise ValueError(
+                    f"{path}: row '{name}' has an unreadable result_json: {exc}"
+                ) from exc
+            rows.append(ManifestRow(name=name, expected=expected))
+    return rows
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `python -m pytest tests/test_manifest.py -v`
+Expected: 6 passed.
+
+- [ ] **Step 5: Confirm nothing that depended on the old behaviour broke**
+
+Run: `python -m pytest tests/test_app.py tests/test_eval.py tests/test_jobs.py -v`
+Expected: all pass. `validate_batch` and the scoring path both go through `load_manifest`, so this is the regression check that matters.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add autoace/eval.py tests/test_manifest.py
+git commit -m "fix: manifest survives a BOM, an omitted result_json column, and blank rows"
+```
+
+---
+
+## Task 15: The asynchronous UI
 
 **Files:**
 - Modify: `autoace/app.py:328-383` (`build_app` and `__main__`)
@@ -2365,7 +2757,7 @@ git commit -m "feat: asynchronous dashboard with timer polling and job lookup"
 
 ---
 
-## Task 14: Deployment artifacts
+## Task 16: Deployment artifacts
 
 **Files:**
 - Create: `deploy/setup.sh`
@@ -2374,7 +2766,7 @@ git commit -m "feat: asynchronous dashboard with timer polling and job lookup"
 - Create: `deploy/Caddyfile`
 - Create: `deploy/duckdns.sh`, `deploy/duckdns.service`, `deploy/duckdns.timer`
 
-These are not unit-testable; verification is the deploy itself in Task 15.
+These are not unit-testable; verification is the deploy itself in Task 17.
 
 - [ ] **Step 1: Write `deploy/autoace-web.service`**
 
@@ -2689,7 +3081,7 @@ git commit -m "feat: Oracle ARM deployment artifacts (systemd, Caddy, DuckDNS)"
 
 ---
 
-## Task 15: Deploy and re-measure on ARM
+## Task 17: Deploy and re-measure on ARM
 
 **Files:** none — this task runs on the VM.
 
@@ -2755,7 +3147,7 @@ git commit -m "docs: record ARM peak RSS and deployed latency"
 
 ---
 
-## Task 16: Documentation
+## Task 18: Documentation
 
 **Files:**
 - Modify: `README.md`
@@ -2806,8 +3198,8 @@ GiB, which is 11x Render's free tier.
 Cover, with the measured numbers:
 
 - **Architecture:** SQLite job store, two systemd units, per-file checkpointing, one worker.
-- **Latency:** 58.2 / 58.7 / 129.8 s per call at 16 threads; 1.11–1.24x slower capped at 2 threads; ~87 min per 50 files. Replace with the ARM figures from Task 15.
-- **Memory:** 5.67 GiB peak, 3.91 GiB steady (Windows working set); ARM figure from Task 15. Note that the peak is the NLI-fallback path and that we size for it so an OpenAI outage cannot OOM-kill the worker.
+- **Latency:** 58.2 / 58.7 / 129.8 s per call at 16 threads; 1.11–1.24x slower capped at 2 threads; ~87 min per 50 files. Replace with the ARM figures from Task 17.
+- **Memory:** 5.67 GiB peak, 3.91 GiB steady (Windows working set); ARM figure from Task 17. Note that the peak is the NLI-fallback path and that we size for it so an OpenAI outage cannot OOM-kill the worker.
 - **Why not a PaaS free tier:** the §2.1 table — Render free is 512 MB, HF Gradio Spaces now need a paid plan, ZeroGPU gives 5 GPU-minutes/day.
 - **Privacy (brief §5):** audio unlinked per file; results carry no audio; TLS terminates in Caddy on our own VM so no third party sees plaintext; DuckDNS is DNS only; OpenAI receives the annotated transcript, not audio.
 - **CI limitation:** GitHub Actions can only run tests needing neither `reference/` nor the weights — attributable to §5, not to thin coverage.
@@ -2824,13 +3216,34 @@ git commit -m "docs: hosted dashboard usage, deployment, and privacy posture"
 
 ## Self-review notes
 
-**Spec coverage.** Every section maps to a task: §2 config (T1) · §3 architecture (T2, T9) · §4 data model (T2, T12) · §5 lifecycle (T3–T7) · §6.1–6.2 web split (T10, T11) · §6.3 timer and lookup (T13) · §6.4 queue position (T8, T11) · §6.5 auth (T13) · §7.1–7.2 failure isolation (T5, T10) · §7.3 reconcile (T6) · §7.4 retry cap (T6, T9) · §8 deployment (T14, T15) · §9 configuration (T1) · §10 testing (throughout) · §10.1 CI limitation (T16) · §11 limitations (T16).
+**Spec coverage.** Every section maps to a task: §2 config (T1) · §3 architecture (T2, T9) · §4 data model (T2, T12) · §5 lifecycle (T3–T7) · §6.1–6.2 web split (T10, T11) · §6.3 timer and lookup (T15) · §6.4 queue position (T8, T11) · §6.5 auth (T15) · §7.1–7.2 failure isolation (T5, T10) · §7.3 reconcile (T6) · §7.4 retry cap (T6, T9) · §8 deployment (T16, T17) · §9 configuration (T1) · §10 testing (throughout) · §10.1 CI limitation (T18) · §11 limitations (T18).
 
-**Two gaps found and closed while writing:**
+**Brief §7 coverage, audited against the PDF rather than against the spec's paraphrase of it.** Every displayed-output requirement now maps to a task:
+
+| Brief §7 requirement | Task |
+|---|---|
+| Hosting, URL, working login credentials, available through the evaluation period | T15 (auth), T16–T17 (deploy) |
+| Upload a folder **or** ZIP with multiple clips and one CSV manifest | existing `_prepare_workdir`, reused |
+| Audio at folder root plus a CSV; each filename corresponds to one row | existing `validate_batch`, reused |
+| CSV `name` + `result_json`; `result_json` may be **empty or omitted** | **T14** |
+| Validate the batch, clearly report missing or unmatched files | T10 |
+| Process each valid clip; show batch progress or completion status | T9, T11, T15 |
+| **Display the prediction using the required output schema** | **T13** |
+| Downloadable CSV or JSON preserving the original filename | existing `results_to_csv` / `results_to_json`, reused |
+| A single malformed or unsupported file must not fail the batch; identify which file failed and why | T5, T10, T11 |
+
+Two of those were genuinely missing and are the reason T13 and T14 exist — see below.
+
+**Two brief §7 requirements were not met by the existing code, and would not have been caught by anything in tasks 1–12:**
+
+1. **The results table displayed only six of the nine schema fields.** `background_noise_present`, `speaker_overlap_present`, and `long_silence_present` were exported to CSV and JSON but never shown on screen. Brief §7 requires the *displayed* prediction to use the required output schema, and §8 scores "result review" inside the 10% dashboard weighting — so an exported-but-invisible field does not count. Task 13. The old `sort_key` also indexed columns 6 and 7 by position, so it would have silently sorted on the wrong column the moment anything was inserted; it now indexes from the end.
+2. **A manifest with a UTF-8 BOM would have failed the entire batch.** `load_manifest` opened with `encoding="utf-8"`, so an Excel-saved CSV — the likely form of an evaluator-supplied file — turns the first fieldname into `﻿name` and makes every `record["name"]` raise `KeyError` before any inference runs. Brief §7 also permits `result_json` to be *omitted entirely* for an unlabeled hidden test set, not merely left empty. Task 14 covers both, plus blank trailing rows and whitespace-padded names, and turns bare `KeyError`/`JSONDecodeError` into messages that name the offending row.
+
+**Two further gaps found and closed while writing:**
 
 1. **The scoring view would have silently broken.** `_finalise_if_done` deletes the workdir, and the manifest lives in it — so the labelled-batch metrics from spec §13 would vanish exactly when a job completed. Task 12 persists the manifest on the job row. Task 11 deliberately ships an honest placeholder message first rather than a silently missing feature, so the defect is visible in the interim rather than hidden.
 2. **`reconcile` could strand a job at `running` forever.** If reconcile is what exhausts the last file's attempts, nothing else would ever call `_finalise_if_done` for that job — there would be no `complete`/`fail` call left to trigger it. Fixed by finalising every touched job at the end of `reconcile`, and pinned by `test_reconcile_finalises_a_job_whose_last_file_it_failed`.
 
 **Type consistency checked.** `ClaimedFile(job_id, name, audio_path, attempts)` and `JobStatus` are used with the same field names everywhere. `JobStatus` gains `manifest_csv` in Task 12, and both the dataclass and its construction site are updated in the same step. `complete(conn, claimed, result)` and `fail(conn, claimed, error)` take a `ClaimedFile`, not a `(job_id, name)` pair, consistently across `jobs.py` and `worker.py`.
 
-**Loader names verified, not assumed.** The Task 14 warm-up block calls six private `lru_cache`d loaders; all six names were read from the current source and are tabulated in that task. `autoace.asr._load_model` and `autoace.ser._load_model` collide, so the block aliases them — an earlier draft would have failed at deploy time with a silently shadowed import.
+**Loader names verified, not assumed.** The Task 16 warm-up block calls six private `lru_cache`d loaders; all six names were read from the current source and are tabulated in that task. `autoace.asr._load_model` and `autoace.ser._load_model` collide, so the block aliases them — an earlier draft would have failed at deploy time with a silently shadowed import.
