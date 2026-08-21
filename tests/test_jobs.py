@@ -599,7 +599,13 @@ def test_job_status_reports_counts_and_queue_position(conn, tmp_path):
 
     status_b = jobs.job_status(conn, job_b)
     assert status_b.queue_position == 1, "job B waits behind job A"
-    assert status_b.eta_seconds == pytest.approx(105.0 * 2, rel=0.01)
+    # Derived from config, not hard-coded: MEAN_SECONDS_PER_FILE is re-measured
+    # per deployment target (it went from 105.0 on an x86 dev box to 192.0 on the
+    # Oracle ARM instance), and this test is about the arithmetic - two unfinished
+    # files ahead of job B - not about the constant's current value.
+    from autoace.config import MEAN_SECONDS_PER_FILE
+
+    assert status_b.eta_seconds == pytest.approx(MEAN_SECONDS_PER_FILE * 2, rel=0.01)
 
 
 def test_job_status_is_none_for_an_unknown_id(conn):

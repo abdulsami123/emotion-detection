@@ -239,15 +239,22 @@ JOB_TTL_SECONDS = 7 * 24 * 3600   # DERIVED — results kept until download. Aud
                                   # metadata and results only.
 MAX_ATTEMPTS = 2                  # DERIVED — breaks the OOM crash loop. reconcile()
                                   # alone would requeue an OOM-killed file forever.
-STALE_RUNNING_SECONDS = 900.0     # DERIVED — 5.6x the slowest measured file (160.8s)
+STALE_RUNNING_SECONDS = 1800.0    # DERIVED — 5.7x the slowest file measured on the
+                                  # deployment hardware (315.1s). Was 900.0 against
+                                  # an x86 160.8s, which would have been only 2.9x.
 WORKER_POLL_SECONDS = 2.0          # DERIVED — idle poll interval; well under the
-                                   # ~105s it takes to process one file, so the
+                                   # ~192s it takes to process one file, so the
                                    # queue never sits idle noticeably.
 UI_POLL_SECONDS = 5.0              # DERIVED — refresh cadence. Each tick is one
                                    # SQLite read, so this is cheap; it only needs
-                                   # to feel live against ~105s per file.
-MEAN_SECONDS_PER_FILE = 105.0     # MEASURED — mean of the three provided calls
-                                  # (58.2/58.7/129.8s) x the 1.18 two-thread penalty
+                                   # to feel live against ~192s per file.
+MEAN_SECONDS_PER_FILE = 192.0      # MEASURED on the deployment hardware (Oracle
+                                   # Ampere Neoverse-N1, 2 OCPU, OMP_NUM_THREADS=2):
+                                   # 115.2 / 146.8 / 315.1 s for the three calls,
+                                   # mean 192.4. The earlier 105.0 came from an x86
+                                   # dev box and understated ARM by 1.83x. This drives
+                                   # the UI ETA, so a stale value makes the dashboard
+                                   # lie about how long a batch will take.
 MAX_UPLOAD_MB = 500               # DERIVED — 50 files at the largest provided call
                                   # (2.8 MB) is ~140 MB; 500 MB is generous headroom
 JOBS_CONNECT_TIMEOUT_S = 30.0     # DERIVED — how long a writer waits for the WAL
