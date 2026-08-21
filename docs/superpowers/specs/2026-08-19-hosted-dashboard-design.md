@@ -46,18 +46,26 @@ wrong** — ASR 2.4x pessimistic, SQUIM 19x and AST 31x optimistic, LLM input to
 | Steady-state resident memory | **3.91 GiB** | MEASURED — same run, after the third call |
 | Per-file latency, 16 threads | 58.2 / 58.7 / 129.8 s | MEASURED — calls 001 / 002 / 003 |
 | Per-file latency, 2 threads | 64.6 s (1.11x) / 160.8 s (1.24x) | MEASURED — calls 001 / 003, `OMP_NUM_THREADS=2` |
-| 50-file batch projection | **~87 min** | DERIVED — mean per-file x 1.18 thread penalty x 50 |
+| Per-file latency, 1 thread | 148.6 s (2.30x) / 371.1 s (2.31x) | MEASURED — calls 001 / 003, `OMP_NUM_THREADS=1`, **vs the 2-thread figures** |
+| 50-file batch projection, 2 threads | **~87 min** | DERIVED — mean per-file x 1.18 thread penalty x 50 |
+| 50-file batch projection, 1 thread | **~202 min** | DERIVED — 105 s x 2.30 x 50 |
 | Python dependency footprint | ~1.5 GiB | MEASURED — torch 527M, gradio 193M, llvmlite 117M, scipy 115M, transformers 97M, ctranslate2 60M |
 | Model weight cache | ~5 GiB | ESTIMATED — not isolated from a 60 GiB shared HF cache; verify on first warm-up |
 
 Three consequences drive the whole design:
 
-**(a) Core count is nearly irrelevant.** Capping the pipeline to 2 threads costs only 1.11–1.24x.
-The pipeline is sequential and memory-bandwidth-bound, not CPU-parallel. `WhisperModel` is
-constructed without `cpu_threads`, so CTranslate2 derives its intra-op count from
-`OMP_NUM_THREADS` — the cap was genuinely applied, not silently ignored.
+**(a) Cores above two buy almost nothing; the second core is not optional.** Going from 16 threads
+to 2 costs only 1.11–1.24x, so the pipeline gains little from wide parallelism. But going from 2 to
+1 costs **2.30x** — a cliff, not a taper, and consistent across both calls (2.30x and 2.31x). So
+`OMP_NUM_THREADS=2` is a floor, not a tuning preference: one core turns a 50-file batch from ~87
+minutes into ~202 minutes.
 
-**(b) RAM is the only binding constraint**, at ~6 GiB.
+> An earlier revision of this section claimed "core count is nearly irrelevant". That was measured
+> only over 16→2 and does not generalise downward. `WhisperModel` is constructed without
+> `cpu_threads`, so CTranslate2 derives its intra-op count from `OMP_NUM_THREADS` — the cap was
+> genuinely applied in both runs, so the non-linearity is real and not a measurement artefact.
+
+**(b) RAM is the binding constraint for *sizing* (~6 GiB), given at least two cores.**
 
 **(c) The 5.67 GiB peak is the *fallback* path.** `bart-large-mnli` (~1.6 GB) loads only inside
 the `except` handler in `pipeline.py` — it is not a co-voter; the two voters are the LLM and the

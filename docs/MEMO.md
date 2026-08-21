@@ -375,18 +375,26 @@ under.
 | Steady-state memory | **3.91 GiB** |
 | Per-file latency, 16 threads | 58.2 / 58.7 / 129.8 s (calls 001/002/003) |
 | Per-file latency, 2 threads | 64.6 s (1.11×) / 160.8 s (1.24×) |
-| 50-file batch | **~87 min** (~105 s/file × 50) |
+| Per-file latency, 1 thread | 148.6 s (2.30×) / 371.1 s (2.31×) — *against the 2-thread figures* |
+| 50-file batch, 2 threads | **~87 min** (~105 s/file × 50) |
+| 50-file batch, 1 thread | **~202 min** (~242 s/file × 50) |
 | Slow worker integration test | 170 s end-to-end on one real call |
 | Python dependency footprint | ~1.5 GiB (torch 527M, gradio 193M, llvmlite 117M, scipy 115M, transformers 97M, ctranslate2 60M) |
 | Model weight cache | ~5 GiB |
 
 Two consequences drive the deployment shape:
 
-**Core count is nearly irrelevant.** Capping the pipeline to 2 threads costs
-only 1.11–1.24×, so **RAM, not CPU, is the binding constraint**.
-`WhisperModel` is constructed without `cpu_threads`, so CTranslate2 derives
-its intra-op count from `OMP_NUM_THREADS` — the cap was genuinely applied,
-not silently ignored.
+**Cores above two buy almost nothing, but the second core is mandatory.**
+Going from 16 threads to 2 costs only 1.11–1.24×. Going from 2 to 1 costs
+**2.30×** (148.6 s and 371.1 s against 64.6 s and 160.8 s) — a cliff, not a
+taper, and consistent across both calls. A 50-file batch is ~87 min on two
+cores and ~202 min on one. So `OMP_NUM_THREADS=2` in the worker unit is a
+floor, not a tuning knob, and the instance must have two OCPUs.
+
+Given two cores, **RAM is what sizes the box**, not CPU. `WhisperModel` is
+constructed without `cpu_threads`, so CTranslate2 derives its intra-op count
+from `OMP_NUM_THREADS` — the cap was genuinely applied in every run, so the
+non-linearity is a property of the pipeline and not a measurement artefact.
 
 **5.67 GiB is the *fallback* path, and we size for it anyway.**
 `bart-large-mnli` (~1.6 GB) loads only inside the `except` handler in

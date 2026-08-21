@@ -110,11 +110,19 @@ host firewall, a swapfile, the venv, both systemd units, and a model-cache
 warm-up. Design and rationale for every choice below are in
 `docs/superpowers/specs/2026-08-19-hosted-dashboard-design.md`.
 
-**Instance:** Oracle Cloud Always Free, `VM.Standard.A1.Flex`, 2 OCPU / 12 GB,
-Ubuntu 24.04 aarch64, Python 3.12. 2 OCPU rather than the free 4 because the
-extra cores buy only 1.1–1.2× (see the memo's latency table) and smaller shape
-requests are far more likely to be granted — `Out of host capacity` is common
-for the free ARM shape.
+**Instance:** Oracle Cloud Always Free, `VM.Standard.A1.Flex`, **2 OCPU / 12 GB**,
+Ubuntu 24.04 aarch64, Python 3.12.
+
+2 OCPU rather than the free 4 because the extra cores buy only 1.1–1.2×, and
+smaller shape requests are far more likely to be granted — `Out of host
+capacity` is common for the free ARM shape.
+
+**2 OCPU is a floor, not a preference.** Dropping to 1 costs **2.30×** (measured;
+see the memo's latency table), taking a 50-file batch from ~87 minutes to ~202
+minutes. The shape form defaults to 1 OCPU / 6 GB — raise both sliders. 6 GB is
+also below the 5.67 GiB measured peak once the OS and Caddy are accounted for.
+If 2 OCPU is refused, change Availability Domain and retry rather than accepting
+1.
 
 **Why not a PaaS free tier.** The worker's measured peak is **5.67 GiB**.
 Render's free tier is 512 MB — off by 11×. Every other free tier surveyed
