@@ -17,8 +17,9 @@ validates it, processes it with visible progress, isolates per-file failures, ex
 queue, and exports results. §13 already enumerates those behaviours and `autoace/app.py`
 already implements them **synchronously**. The gap is operational:
 
-- A 50-file batch takes ~87 minutes (§2). No HTTP request survives that, and no browser tab
-  should have to stay open for it.
+- A 50-file batch takes ~2.7 hours on the deployment hardware (§2; was projected at ~87 minutes
+  on the x86 dev box). No HTTP request survives that, and no browser tab should have to stay
+  open for it.
 - The evaluator must be able to close the tab and come back to results.
 - A crash, redeploy, or OOM mid-batch must not discard completed work.
 
@@ -42,41 +43,71 @@ wrong** — ASR 2.4x pessimistic, SQUIM 19x and AST 31x optimistic, LLM input to
 
 | Quantity | Value | Provenance |
 |---|---|---|
-| Peak resident memory, one worker | **5.67 GiB** | MEASURED — `GetProcessMemoryInfo` peak working set, all three calls in one process |
-| Steady-state resident memory | **3.91 GiB** | MEASURED — same run, after the third call |
-| Per-file latency, 16 threads | 58.2 / 58.7 / 129.8 s | MEASURED — calls 001 / 002 / 003 |
-| Per-file latency, 2 threads | 64.6 s (1.11x) / 160.8 s (1.24x) | MEASURED — calls 001 / 003, `OMP_NUM_THREADS=2` |
-| Per-file latency, 1 thread | 148.6 s (2.30x) / 371.1 s (2.31x) | MEASURED — calls 001 / 003, `OMP_NUM_THREADS=1`, **vs the 2-thread figures** |
-| 50-file batch projection, 2 threads | **~87 min** | DERIVED — mean per-file x 1.18 thread penalty x 50 |
-| 50-file batch projection, 1 thread | **~202 min** | DERIVED — 105 s x 2.30 x 50 |
+| Peak resident memory, one worker | ~~5.67 GiB~~ **superseded, see below** | dev-machine estimate |
+| Steady-state resident memory | **3.91 GiB** | MEASURED — dev machine, same run, after the third call |
+| Per-file latency, 16 threads | 58.2 / 58.7 / 129.8 s | MEASURED — dev machine, calls 001 / 002 / 003 |
+| Per-file latency, 2 threads | 64.6 s (1.11x) / 160.8 s (1.24x) | MEASURED — dev machine, calls 001 / 003, `OMP_NUM_THREADS=2` |
+| Per-file latency, 1 thread | 148.6 s (2.30x) / 371.1 s (2.31x) | MEASURED — dev machine, calls 001 / 003, `OMP_NUM_THREADS=1`, **vs the 2-thread figures** |
+| 50-file batch projection, 2 threads | ~~87 min~~ **superseded, see below** | dev-machine estimate |
+| 50-file batch projection, 1 thread | **~202 min** | DERIVED — dev-machine 105 s x 2.30 x 50; not re-derived on ARM |
 | Python dependency footprint | ~1.5 GiB | MEASURED — torch 527M, gradio 193M, llvmlite 117M, scipy 115M, transformers 97M, ctranslate2 60M |
-| Model weight cache | ~5 GiB | ESTIMATED — not isolated from a 60 GiB shared HF cache; verify on first warm-up |
+| Model weight cache | ~~5 GiB~~ **superseded, see below** | dev-machine estimate |
+
+The rows above were all measured on the x86 development machine, before deployment. Now that the
+system runs on the actual deployment hardware, the rows below **supersede** the peak-memory,
+50-file-batch, and model-cache rows above; everything else (steady-state, thread-scaling ratios)
+was not re-measured on ARM and is carried forward as-is.
+
+| Quantity | Value | Provenance |
+|---|---|---|
+| Peak resident memory, one worker | **7.26 GiB** | MEASURED on deployment hardware — `/usr/bin/time -v` max RSS, all three calls in one process, NLI-fallback path, `Swaps: 0` |
+| Per-file latency, 2 threads (ARM) | 115.2 / 146.8 / 315.1 s | MEASURED on deployment hardware — calls 001/002/003, `OMP_NUM_THREADS=2`, Ampere Neoverse-N1 |
+| Mean per file (ARM) | **192.4 s** | MEASURED on deployment hardware — mean of the three calls above |
+| 50-file batch, 2 threads (ARM) | **~160 min (~2.7 h)** | MEASURED-derived on deployment hardware — mean-per-file x 50 |
+| Model weight cache | **4.2 GB** | MEASURED on deployment hardware — 4.1 GB HF cache + 85 MB ECAPA |
+
+**ARM is 1.78–1.96x slower per file than the x86 dev box at the same `OMP_NUM_THREADS=2` setting**
+(115.2/64.6 = 1.78x on call_001, 315.1/160.8 = 1.96x on call_003). The Ampere Neoverse-N1 cores are
+materially slower per-core than the x86 dev machine; the earlier ~87-minute projection was correct
+arithmetic on the wrong hardware. **The real 50-file batch figure is ~2.7 hours, not ~1 hour** —
+this is a limitation, not a rounding difference, and is carried into §11 and the memo.
+
+Both ARM figures are the **NLI-fallback path** (no `OPENAI_API_KEY`), matching the dev-machine
+measurement basis exactly, so the 1.78–1.96x comparison is like-for-like. **The happy-path (LLM
+available) peak is still unmeasured** — see §11 item 3.
 
 Three consequences drive the whole design:
 
 **(a) Cores above two buy almost nothing; the second core is not optional.** Going from 16 threads
 to 2 costs only 1.11–1.24x, so the pipeline gains little from wide parallelism. But going from 2 to
 1 costs **2.30x** — a cliff, not a taper, and consistent across both calls (2.30x and 2.31x). So
-`OMP_NUM_THREADS=2` is a floor, not a tuning preference: one core turns a 50-file batch from ~87
-minutes into ~202 minutes.
+`OMP_NUM_THREADS=2` is a floor, not a tuning preference: one core turns a 50-file batch from ~2.7
+hours into roughly double that on the deployment hardware (the 1-thread ratio itself was measured
+only on the dev machine and not re-verified on ARM).
 
 > An earlier revision of this section claimed "core count is nearly irrelevant". That was measured
 > only over 16→2 and does not generalise downward. `WhisperModel` is constructed without
 > `cpu_threads`, so CTranslate2 derives its intra-op count from `OMP_NUM_THREADS` — the cap was
 > genuinely applied in both runs, so the non-linearity is real and not a measurement artefact.
 
-**(b) RAM is the binding constraint for *sizing* (~6 GiB), given at least two cores.**
+**(b) RAM is the binding constraint for *sizing*, given at least two cores.** The measured peak on
+the deployment hardware (7.26 GiB) against 10.9 GB usable leaves ~3.6 GB headroom, and the web
+process plus Caddy consume some of that — workable, but thinner than the ~6 GiB planning figure
+assumed. This retroactively confirms that a 6 GB shape would have OOM-killed the worker, which is
+the concrete justification for insisting on the 12 GB shape (§8.1) rather than accepting a smaller
+one if offered.
 
-**(c) The 5.67 GiB peak is the *fallback* path.** `bart-large-mnli` (~1.6 GB) loads only inside
+**(c) The 7.26 GiB peak is the *fallback* path.** `bart-large-mnli` (~1.6 GB) loads only inside
 the `except` handler in `pipeline.py` — it is not a co-voter; the two voters are the LLM and the
-dimensional SER. The deployed happy path should therefore be materially lighter. **We still size
-for 5.67 GiB**, because an OpenAI outage must not OOM-kill the worker. See §7.4.
+dimensional SER. The deployed happy path should therefore be materially lighter, but that peak is
+still unmeasured (§11 item 3). **We still size for 7.26 GiB**, because an OpenAI outage must not
+OOM-kill the worker. See §7.4.
 
-> **Caveat on the memory figure.** Windows peak working set is not Linux RSS. The magnitude is
-> right; the exact number will differ on the VM. Re-measure there before trusting it, and note
-> that an earlier version of this probe reported `0.00 GiB` across the board because
-> `GetCurrentProcess` returned a pseudo-handle that ctypes truncated to 32 bits — a silent API
-> failure that looked exactly like a low memory footprint.
+> **The memory-figure caveat is now resolved, not merely re-measured.** Windows peak working set
+> and Linux max RSS measure genuinely different things — not the same quantity read on different
+> hardware. Page size on the deployment VM is 4096, so the +28% delta (5.67 -> 7.26 GiB) is **not**
+> explained by large pages; it is the metric, not the machine, that differs. The ARM run never
+> swapped (`Swaps: 0`), so 7.26 GiB is a clean reading, not a value inflated by swap accounting.
 
 ### 2.1 Free tiers that were refuted, with the reason
 
@@ -84,7 +115,7 @@ Recorded so nobody re-proposes them.
 
 | Option | Why it fails |
 |---|---|
-| Render free | 512 MB RAM, no persistent disk. Off by 11x. |
+| Render free | 512 MB RAM, no persistent disk. Off by ~14.5x against the measured 7.26 GiB deployment-hardware peak (11x against the earlier 5.67 GiB dev-machine estimate). |
 | Hugging Face Spaces free | Gradio/Docker Spaces now **require a paid plan** (PRO for personal accounts). Static Spaces are free but HTML-only. |
 | HF ZeroGPU (the free-account exception) | 5 minutes of GPU **per day** on a free account; `@spaces.GPU` is request-scoped and cannot host a long-running worker. |
 | Railway | No free tier; $5 trial credit only. |
@@ -153,8 +184,9 @@ architecture — it is simply not this one. Neither buys anything here:
 
 - Per-file SQLite checkpointing already bounds interruption loss to one file (~90 s).
 - The brief does not ask for durable resumption.
-- Throughput is fixed at ~87 min per 50 files by the pipeline itself (§2a), not by the queue
-  technology. No queue makes it faster.
+- Throughput is fixed at ~2.7 hours per 50 files on the deployment hardware (§2; was projected at
+  ~87 min on the x86 dev box) by the pipeline itself, not by the queue technology. No queue makes
+  it faster.
 
 `jobs.py` exposes `claim_next()` / `complete()` / `fail()` and nothing else, so a different
 executor could replace `worker.py` later without touching the web layer or the pipeline. That
@@ -281,15 +313,15 @@ A `gr.Timer` refreshes `poll_job` on an interval. Closing the browser stops the 
 worker, and all state is in SQLite.
 
 A **job-ID lookup box** restores the view for any non-expired job. This is what makes "results
-kept until download" real rather than aspirational, and it is the answer to an ~87-minute batch:
-the evaluator uploads, takes the ID, and comes back.
+kept until download" real rather than aspirational, and it is the answer to a ~2.7-hour batch on
+the deployment hardware: the evaluator uploads, takes the ID, and comes back.
 
 ### 6.4 Queue position
 
-One worker means jobs are FIFO across users; a second batch waits behind the first for up to ~87
-minutes. The status panel shows queue position and an estimate derived from
-`MEAN_SECONDS_PER_FILE`, so a waiting job does not look hung. Surfacing this is deliberate — a
-silent wait is the failure mode.
+One worker means jobs are FIFO across users; a second batch waits behind the first for up to ~2.7
+hours on the deployment hardware. The status panel shows queue position and an estimate derived
+from `MEAN_SECONDS_PER_FILE` (192.0 on the deployment hardware), so a waiting job does not look
+hung. Surfacing this is deliberate — a silent wait is the failure mode.
 
 ### 6.5 Auth
 
@@ -332,16 +364,27 @@ running any Python still counts. `MAX_ATTEMPTS = 2`: a file that dies twice beco
 
 ### 8.1 Instance
 
-`VM.Standard.A1.Flex`, Ubuntu 24.04 (aarch64), **2 OCPU / 12 GB**.
+`VM.Standard.A1.Flex`, **2 OCPU / 12 GB (10.9 GB usable)**, aarch64.
+
+**Superseded: this section originally planned Ubuntu 24.04.** The actual deployment is **Oracle
+Linux 9.8**, not Ubuntu — chosen after the fact, and `deploy/setup.sh` was made distro-aware
+(dnf/apt, firewalld/iptables, a derived app user, and a Caddy static binary where Caddy is not
+packaged) rather than rewritten Oracle-Linux-only, so Ubuntu 24.04 remains a supported target even
+though it was not the one actually used.
 
 2 OCPU rather than the full free 4 OCPU / 24 GB allowance because §2a shows the extra cores buy
 1.1–1.2x, while smaller shape requests are markedly more likely to be granted — Oracle ARM
-returns `Out of host capacity` frequently in popular regions. 12 GB is ~2x the measured peak.
+returns `Out of host capacity` frequently in popular regions. 12 GB is no longer a comfortable ~2x
+the measured peak: against the deployment-hardware figure of 7.26 GiB, 10.9 GB usable leaves only
+~3.6 GB headroom once the web process and Caddy are accounted for. Workable, but thinner than
+planned, and this is the concrete number that would have made a 6 GB shape OOM-kill the worker.
 
-Default 50 GB boot volume is sufficient: ~1.5 GiB deps + ~5 GiB weights + staged audio.
+Default 50 GB boot volume is sufficient: ~1.5 GiB deps + 4.2 GB weights (measured; 4.1 GB HF cache
++ 85 MB ECAPA, superseding the earlier ~5 GiB estimate) + staged audio.
 
-**Python 3.12** — Ubuntu 24.04's system Python. Every dependency that could have blocked an ARM
-port publishes `manylinux_aarch64` wheels for both cp312 and cp313, verified against PyPI:
+**Python 3.12**, installed from the `ol9_appstream` repo on Oracle Linux 9.8 (the system default is
+3.9). Every dependency that could have blocked an ARM port publishes `manylinux_aarch64` wheels for
+both cp312 and cp313, verified against PyPI:
 
 | Package | linux-aarch64 tags |
 |---|---|
@@ -351,8 +394,8 @@ port publishes `manylinux_aarch64` wheels for both cp312 and cp313, verified aga
 | `opensmile` 2.6.0 | `manylinux_2_17_aarch64` |
 | `soundfile` 0.14.0 | pure-python |
 
-3.12 is chosen over 3.13 to avoid deadsnakes, whose ARM support is poor. The suite must be run on
-the VM to confirm nothing depends on 3.13.
+3.12 is chosen over 3.13 to avoid deadsnakes, whose ARM support is poor. **Verified in production:**
+41 CI-safe tests pass on ARM / Python 3.12, confirming nothing depended on 3.13.
 
 ### 8.2 No Docker
 
@@ -387,9 +430,12 @@ Gradio's `share=True` is **not** used: those tunnels expire and the URL must sta
 the evaluation period.
 
 **Cost:** two Oracle steps that a tunnel would have avoided — a VCN ingress rule for 80/443 and a
-matching `iptables` rule, because Oracle's Ubuntu images ship netfilter rules that drop
-everything except SSH. Port 80 must stay open for the ACME HTTP-01 challenge and renewals, not
-only for the initial issuance.
+matching host-firewall rule, because Oracle's stock images ship rules that drop everything except
+SSH. Port 80 must stay open for the ACME HTTP-01 challenge and renewals, not only for the initial
+issuance. (Oracle's Ubuntu images use netfilter/`iptables` directly; the actual Oracle Linux 9.8
+deployment uses `firewalld` instead — `setup.sh` is distro-aware for this reason.) **Verified in
+production:** SELinux is Enforcing on the deployment host and did not interfere with Caddy
+(`/usr/bin/caddy` is labelled `bin_t`).
 
 ### 8.4 Layout and units
 
@@ -413,9 +459,11 @@ duckdns.timer              refreshes the A record if the public IP changes
 Gradio binds `127.0.0.1:7860`, not `0.0.0.0` — Caddy is the only listener reachable from off-box,
 so the app cannot be reached over plaintext HTTP even if a firewall rule is wrong.
 
-A **4 GiB swapfile** is provisioned as insurance for the transient peak (5.67 GiB peak vs 3.91
-GiB steady). Swapping is slow, but slow beats an OOM kill, and §7.4 covers the case where it is
-not enough.
+A **4 GiB swapfile** is provisioned as insurance for the transient peak. Sized against the
+dev-machine estimate (5.67 GiB peak vs 3.91 GiB steady); the deployment-hardware peak measured
+7.26 GiB and the ARM run never swapped (`Swaps: 0`), so the swapfile was not actually drawn on in
+this measurement, but it remains the insurance policy for a heavier real batch. Swapping is slow,
+but slow beats an OOM kill, and §7.4 covers the case where it is not enough.
 
 ### 8.5 Secrets
 
@@ -489,9 +537,10 @@ App: the existing 8 validation/export tests must pass **unmodified**. New tests 
 ### 10.1 CI is structurally limited, and that is deliberate
 
 `reference/` is gitignored because the audio is confidential (brief §5), and the weights are
-~5 GiB. So GitHub Actions can only run tests needing neither — `jobs.py`, `fuse.py`, schema, and
-the app's validation/export tests. The memo must say this plainly, attributing it to §5 rather
-than leaving it to look like thin coverage.
+4.2 GB measured (4.1 GB HF cache + 85 MB ECAPA; supersedes the earlier ~5 GiB estimate). So GitHub
+Actions can only run tests needing neither — `jobs.py`, `fuse.py`, schema, and the app's
+validation/export tests. The memo must say this plainly, attributing it to §5 rather than leaving
+it to look like thin coverage.
 
 ---
 
@@ -499,16 +548,16 @@ than leaving it to look like thin coverage.
 
 | # | Limitation | Status |
 |---|---|---|
-| 1 | One worker: jobs are FIFO across users, up to ~87 min wait | Accepted; surfaced as queue position (§6.4) |
-| 2 | Peak memory measured on Windows, not Linux ARM | **Must re-measure on the VM** before trusting §2 |
-| 3 | Happy-path (LLM available) peak never measured — needs a valid API key | Open; sized against the heavier fallback path meanwhile |
+| 1 | One worker: jobs are FIFO across users, up to **~2.7 h wait** on deployment hardware (was ~87 min on the x86 dev-machine projection) | Accepted; surfaced as queue position (§6.4) |
+| 2 | ~~Peak memory measured on Windows, not Linux ARM~~ — **done.** | **Resolved:** 7.26 GiB max RSS measured on the deployment hardware (`/usr/bin/time -v`, `Swaps: 0`). Windows peak-working-set and Linux max-RSS measure different things, not the same quantity on different hardware — page size is 4096, so the +28% delta is not a large-page artefact. This is now the number the box is sized against (§2b). |
+| 3 | Happy-path (LLM available) peak never measured — needs a valid API key | **Still open.** Sized against the heavier fallback path (7.26 GiB) meanwhile |
 | 4 | Oracle ARM `Out of host capacity` can block provisioning entirely | Mitigated by requesting 2 OCPU; no in-repo fix |
 | 5 | A file that OOMs twice is reported `failed`, not analysed | Accepted (§7.4); the alternative is a crash loop |
-| 6 | Swap can mask memory pressure as latency | Accepted; journald records the worker's RSS per file |
+| 6 | Swap can mask memory pressure as latency | Accepted; journald records the worker's RSS per file. The measured deployment run never swapped (`Swaps: 0`), so this did not fire in practice |
 | 7 | DuckDNS is a third-party DNS dependency: if it stops resolving, the hostname breaks | Accepted — DNS only, no traffic path (§8.6). The public IP keeps working and the cert stays valid |
 | 10 | Oracle public IPs are ephemeral unless reserved, and a change breaks both DNS and TLS | Mitigated by reserving the IP at create time plus a `duckdns.timer` refresh |
 | 8 | Results are lost if the boot volume is lost — no backups | Deliberate: results are reproducible, audio should not persist |
-| 9 | Model weight cache size (~5 GiB) never isolated from a shared 60 GiB HF cache | Verify at warm-up |
+| 9 | Model weight cache size (~5 GiB) never isolated from a shared 60 GiB HF cache | **Resolved:** measured at 4.2 GB (4.1 GB HF cache + 85 MB ECAPA) on the deployment host |
 
 ---
 

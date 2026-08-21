@@ -346,8 +346,10 @@ Full design: `docs/superpowers/specs/2026-08-19-hosted-dashboard-design.md`.
 
 ### 9.1 Why synchronous does not work
 
-A 50-file batch runs at **~87 minutes** (§9.2). No HTTP request survives
-that, and no evaluator should have to keep a browser tab open for it. The
+A 50-file batch runs at **~2.7 hours on the deployment hardware** (§9.2) —
+the earlier ~87-minute figure was an x86 dev-machine projection and is now
+superseded. No HTTP request survives that, and no evaluator should have to
+keep a browser tab open for it. The
 fix is a job queue: `autoace/jobs.py` (new, SQLite/WAL — schema, enqueue,
 exclusive claim, complete, fail, reconcile, expire) and `autoace/worker.py`
 (new, the drain loop) run as two systemd units against one on-disk store.
@@ -371,42 +373,68 @@ under.
 
 | Quantity | Value |
 |---|---|
-| Peak worker memory | **5.67 GiB** (Windows peak working set, all three calls in one process, NLI-fallback path) |
-| Steady-state memory | **3.91 GiB** |
-| Per-file latency, 16 threads | 58.2 / 58.7 / 129.8 s (calls 001/002/003) |
-| Per-file latency, 2 threads | 64.6 s (1.11×) / 160.8 s (1.24×) |
-| Per-file latency, 1 thread | 148.6 s (2.30×) / 371.1 s (2.31×) — *against the 2-thread figures* |
-| 50-file batch, 2 threads | **~87 min** (~105 s/file × 50) |
-| 50-file batch, 1 thread | **~202 min** (~242 s/file × 50) |
+| Peak worker memory (dev machine) | ~~5.67 GiB~~ **superseded — see deployment-hardware row below** (Windows peak working set, all three calls in one process, NLI-fallback path) |
+| Steady-state memory (dev machine) | **3.91 GiB** — not re-measured on the deployment hardware |
+| Per-file latency, 16 threads (dev machine) | 58.2 / 58.7 / 129.8 s (calls 001/002/003) |
+| Per-file latency, 2 threads (dev machine, x86) | 64.6 s (1.11×) / 160.8 s (1.24×) |
+| Per-file latency, 1 thread (dev machine) | 148.6 s (2.30×) / 371.1 s (2.31×) — *against the 2-thread figures* |
+| 50-file batch, 2 threads (dev-machine projection) | ~~87 min~~ **superseded** (~105 s/file × 50) |
+| 50-file batch, 1 thread (dev-machine projection) | **~202 min** (~242 s/file × 50) — not re-derived on ARM |
 | Slow worker integration test | 170 s end-to-end on one real call |
 | Python dependency footprint | ~1.5 GiB (torch 527M, gradio 193M, llvmlite 117M, scipy 115M, transformers 97M, ctranslate2 60M) |
-| Model weight cache | ~5 GiB |
+| Model weight cache (dev-machine estimate) | ~~5 GiB~~ **superseded** |
+
+**Deployment hardware (Oracle Cloud `VM.Standard.A1.Flex`, 2 OCPU / 12 GB, 10.9 GB usable, Ampere Neoverse-N1 aarch64, Oracle Linux 9.8, Python 3.12, `OMP_NUM_THREADS=2`, page size 4096) — these rows supersede the corresponding dev-machine rows above:**
+
+| Quantity | Value |
+|---|---|
+| Peak worker memory | **7.26 GiB** (Linux max RSS, `/usr/bin/time -v`, all three calls in one process, NLI-fallback path, `Swaps: 0`) |
+| Per-file latency, 2 threads | 115.2 / 146.8 / 315.1 s (calls 001/002/003) |
+| Mean per file | **192.4 s** |
+| 50-file batch, 2 threads | **~160 min (~2.7 h)** |
+| Model weight cache | **4.2 GB measured** (4.1 GB HF cache + 85 MB ECAPA) |
+
+**ARM is 1.78–1.96× slower per file than the x86 dev box at the same `OMP_NUM_THREADS=2`** (115.2/64.6
+on call_001, 315.1/160.8 on call_003). Both deployment-hardware figures are the **NLI-fallback path**
+(no `OPENAI_API_KEY`), the same basis as the dev-machine numbers, so the comparison is like-for-like.
+The happy-path (LLM available) peak is still unmeasured (below).
 
 Two consequences drive the deployment shape:
 
 **Cores above two buy almost nothing, but the second core is mandatory.**
-Going from 16 threads to 2 costs only 1.11–1.24×. Going from 2 to 1 costs
+Going from 16 threads to 2 costs only 1.11–1.24× (dev machine). Going from 2 to 1 costs
 **2.30×** (148.6 s and 371.1 s against 64.6 s and 160.8 s) — a cliff, not a
-taper, and consistent across both calls. A 50-file batch is ~87 min on two
-cores and ~202 min on one. So `OMP_NUM_THREADS=2` in the worker unit is a
-floor, not a tuning knob, and the instance must have two OCPUs.
+taper, and consistent across both calls. On the deployment hardware, a 50-file batch is
+**~160 min (~2.7 h)** on two cores; the 1-core ratio was not re-measured on ARM. So
+`OMP_NUM_THREADS=2` in the worker unit is a floor, not a tuning knob, and the instance must have
+two OCPUs.
 
 Given two cores, **RAM is what sizes the box**, not CPU. `WhisperModel` is
 constructed without `cpu_threads`, so CTranslate2 derives its intra-op count
 from `OMP_NUM_THREADS` — the cap was genuinely applied in every run, so the
 non-linearity is a property of the pipeline and not a measurement artefact.
 
-**5.67 GiB is the *fallback* path, and we size for it anyway.**
+**7.26 GiB is the *fallback* path, and we size for it anyway.**
 `bart-large-mnli` (~1.6 GB) loads only inside the `except` handler in
 `pipeline.py`; it is not a co-voter — the two voters are the LLM and the
-dimensional SER. The deployed happy path should be materially lighter, but an
-OpenAI outage must not OOM-kill the worker, so the box is sized against the
-worse number.
+dimensional SER. The deployed happy path should be materially lighter, but it
+is still unmeasured, and an OpenAI outage must not OOM-kill the worker, so
+the box is sized against the worse number.
 
-**Caveat.** Windows peak working set is not Linux RSS. The magnitude should
-hold; the exact number will differ on the VM and must be re-measured there.
-Also unmeasured: the happy-path (LLM available) peak, which needs a valid
-API key.
+**7.26 GiB against 10.9 GB usable leaves only ~3.6 GB of headroom**, and the
+web process plus Caddy consume some of that — workable, but thinner than
+planned. This retroactively confirms that a 6 GB shape would have OOM-killed
+the worker, which is the concrete justification for insisting on 12 GB
+rather than accepting a smaller shape if one were offered.
+
+**The Windows-vs-Linux caveat is now resolved, not merely re-measured.**
+Windows peak working set and Linux max RSS measure genuinely different
+things, not the same quantity read on different hardware. Page size on the
+deployment VM is 4096, so the +28% delta (5.67 → 7.26 GiB) is **not**
+explained by large pages — it is the metric, not the machine, that differs,
+and no further explanation is owed beyond that. The ARM run never swapped
+(`Swaps: 0`), so 7.26 GiB is a clean reading. **Still unmeasured: the
+happy-path (LLM available) peak**, which needs a valid API key.
 
 ### 9.3 Free tiers refuted
 
@@ -414,20 +442,36 @@ Recorded so none of these get re-proposed:
 
 | Option | Why it fails |
 |---|---|
-| Render free | 512 MB RAM, no persistent disk. Off by 11× against the 5.67 GiB peak. |
+| Render free | 512 MB RAM, no persistent disk. Off by ~14.5× against the measured 7.26 GiB deployment-hardware peak (was 11× against the earlier 5.67 GiB dev-machine estimate). |
 | Hugging Face Spaces free | Gradio/Docker Spaces now require a paid plan (PRO for personal accounts); only Static Spaces are free. |
 | HF ZeroGPU (the free-account exception) | 5 minutes of GPU **per day**; `@spaces.GPU` is request-scoped and cannot host a long-running worker. |
 | Railway | No free tier; $5 trial credit only. |
 | Fly.io / Koyeb / Northflank | 256–512 MB free allowances. |
 | AWS / GCP / Azure free VMs | 1 GB micro instances. |
 
-**Selected: Oracle Cloud Always Free**, `VM.Standard.A1.Flex`, 2 OCPU / 12 GB,
-Ubuntu 24.04 aarch64, Python 3.12. 2 OCPU rather than the free 4 because §9.2
-shows the extra cores buy only 1.1–1.2×, while smaller shape requests are
-markedly more likely to be granted — Oracle ARM returns `Out of host
-capacity` frequently in popular regions. All ARM-risk dependencies publish
-`manylinux_aarch64` cp312 wheels: `torch` 2.13.0, `ctranslate2` 4.8.1, `numba`
-0.67.0, `opensmile` 2.6.0, `soundfile` (pure-python).
+**Selected: Oracle Cloud Always Free**, `VM.Standard.A1.Flex`, 2 OCPU / 12 GB
+(10.9 GB usable), Ampere Neoverse-N1 aarch64, Python 3.12. 2 OCPU rather than
+the free 4 because §9.2 shows the extra cores buy only 1.1–1.2×, while
+smaller shape requests are markedly more likely to be granted — Oracle ARM
+returns `Out of host capacity` frequently in popular regions. All ARM-risk
+dependencies publish `manylinux_aarch64` cp312 wheels: `torch` 2.13.0,
+`ctranslate2` 4.8.1, `numba` 0.67.0, `opensmile` 2.6.0, `soundfile`
+(pure-python).
+
+**The actual OS is Oracle Linux 9.8, not Ubuntu.** `deploy/setup.sh` was made
+distro-aware (dnf/apt package installs, firewalld/iptables, a derived app
+user, and a Caddy static binary where Caddy is not packaged) rather than
+written Oracle-Linux-only, so Ubuntu 24.04 remains a supported target even
+though it was not the one used for the live deployment.
+
+**On aarch64 Linux, the default PyPI `torch` build is CUDA, not CPU** —
+it began pulling `nvidia_cublas` at 542 MB before the install was corrected
+to take `torch+cpu` from `download.pytorch.org/whl/cpu` explicitly (155 MB).
+Windows defaults to the CPU build, which is why this never surfaced in
+development. Separately, `ffmpeg`/`libsndfile` turned out not to be needed
+at all: `soundfile` bundles libsndfile and PyAV bundles ffmpeg. That removed
+the only hard blocker on Oracle Linux, where `ffmpeg` otherwise needs EPEL
+plus RPM Fusion.
 
 **TLS is Caddy plus a DuckDNS hostname, no domain purchased.** DuckDNS
 specifically, not `nip.io`/`sslip.io`: Let's Encrypt scopes its 50-cert-per-
@@ -436,7 +480,10 @@ on the PSL, so each `<name>.duckdns.org` gets its own quota; `nip.io` and
 `sslip.io` are not on the PSL, so every certificate for either shares one
 chronically-exhausted quota. Verified against the live list — a correctness
 difference, not a preference. A 4 GiB swapfile insures the gap between the
-3.91 GiB steady state and the 5.67 GiB peak; slow beats an OOM kill.
+3.91 GiB dev-machine steady state and the dev-machine peak; on the
+deployment hardware the measured peak is 7.26 GiB and the run never swapped
+(`Swaps: 0`) — slow beats an OOM kill, and the margin is thinner than
+planned (see §9.2).
 
 ### 9.4 Privacy posture (brief §5)
 
@@ -479,11 +526,14 @@ inference runs.
 ### 9.6 CI is structurally limited, and that is deliberate
 
 `reference/` is gitignored because the audio is confidential (brief §5) and
-the model weights are ~5 GiB, so GitHub Actions can only run tests needing
-neither: `jobs.py`, `fuse.py`, schema, manifest, and the app's
+the model weights are 4.2 GB measured (4.1 GB HF cache + 85 MB ECAPA;
+supersedes the earlier ~5 GiB estimate), so GitHub Actions can only run tests
+needing neither: `jobs.py`, `fuse.py`, schema, manifest, and the app's
 validation/export tests. This is attributable to §5, not to thin coverage —
 the pipeline and worker integration tests exist and pass locally against the
-provided audio but cannot run in a public CI environment.
+provided audio but cannot run in a public CI environment. **Verified in
+production:** 41 CI-safe tests pass on the deployment host (ARM, Python
+3.12), confirming nothing depended on Python 3.13.
 
 ### 9.7 Two brief §7 gaps found in this build
 
@@ -511,25 +561,65 @@ Reported as found-and-fixed, not as new features:
 ### 9.8 Limitations
 
 1. **One worker: jobs are FIFO across users.** A second batch waits up to
-   ~87 minutes behind the first. Surfaced as queue position and an ETA
-   rather than a silent wait.
-2. **Peak memory measured on Windows, not Linux ARM** — must be re-measured
-   on the VM before the §9.2 figures are trusted there.
-3. **The happy-path (LLM available) peak was never measured**; it needs a
-   valid API key.
-4. **Oracle ARM `Out of host capacity`** can block provisioning entirely;
+   **~2.7 hours** (deployment hardware) behind the first — was ~87 minutes
+   on the earlier x86 dev-machine projection. Surfaced as queue position and
+   an ETA rather than a silent wait.
+2. **The real batch time is ~2.7 hours against the ~1 hour the trial owner
+   accepted as reasonable.** The user explicitly signed off on "~1 hour is
+   acceptable" for a 50-file batch; the measured deployment figure is ~2.7×
+   that. The cause is hardware, not a regression: Ampere Neoverse-N1 cores
+   are materially slower per-core than the x86 dev machine, and the earlier
+   ~1-hour projection was correct arithmetic performed on the wrong
+   hardware. This is now the single most consequential number in this memo
+   and should be re-confirmed as acceptable before evaluation proceeds.
+3. ~~Peak memory measured on Windows, not Linux ARM~~ — **resolved.** 7.26
+   GiB max RSS measured on the deployment hardware (§9.2); Windows
+   peak-working-set and Linux max-RSS measure different things, not the
+   same quantity on different hardware, and the +28% delta is not a
+   large-page artefact (page size is 4096 on both the measurement tooling's
+   assumptions and the VM).
+4. **The happy-path (LLM available) peak was never measured**; it needs a
+   valid API key. Still open.
+5. **Oracle ARM `Out of host capacity`** can block provisioning entirely;
    there is no in-repo fix, only the smaller-shape mitigation in §9.3.
-5. **A file that dies twice is reported `failed` rather than analysed** —
+6. **A file that dies twice is reported `failed` rather than analysed** —
    the alternative is a crash loop (§9.5).
-6. `shutil.rmtree(ignore_errors=True)` silently no-ops on Windows when a
+7. `shutil.rmtree(ignore_errors=True)` silently no-ops on Windows when a
    handle is still open, so `_remove_workdir` reports whether the directory
    is actually gone rather than trusting the call. The exposure is lower on
    the Linux deployment target.
-7. **Swap can mask memory pressure as latency.**
-8. **No backups.** Results are reproducible and audio should not persist
+8. **Swap can mask memory pressure as latency.** In the measured deployment
+   run, swap was never drawn on (`Swaps: 0`), so this has not yet been
+   observed in practice.
+9. **No backups.** Results are reproducible and audio should not persist
    past processing, so none are taken.
-9. **CI cannot cover the pipeline or worker end-to-end** (§9.6) — a
-   consequence of brief §5, not of thin test-writing.
+10. **CI cannot cover the pipeline or worker end-to-end** (§9.6) — a
+    consequence of brief §5, not of thin test-writing.
+
+### 9.9 Verified in production
+
+Beyond the measured numbers above, the following were exercised live on the
+deployment host rather than merely planned:
+
+- **Live at `https://edetection.duckdns.org`** behind Caddy with a real
+  Let's Encrypt certificate (valid to 19 Nov 2026), an HTTP→HTTPS 308
+  redirect, and Gradio bound to `127.0.0.1:7860` only.
+- **Auth confirmed end-to-end:** `/config` returns 401 unauthenticated and
+  200 with a session cookie; `POST /login` returns 400 on a wrong password.
+  Gradio 5.x `auth=` is **cookie/session based, not HTTP Basic** — worth
+  stating because it is a common wrong assumption.
+- **`caddy validate` accepted `deploy/Caddyfile`** against the live v2.11.4
+  binary; `request_body { max_size 500MB }` is valid v2 syntax.
+- **The interruption-recovery path was exercised unintentionally.** The
+  worker was stopped mid-file; on restart, `reconcile()` logged `startup
+  reconcile: 1 requeued` and re-analysed the file at `attempts: 2` rather
+  than losing it.
+- **Validation was exercised by real traffic.** An upload with no manifest
+  correctly reported "No CSV manifest found in the upload"; an upload whose
+  manifest listed three files with only one present correctly reported the
+  two missing by name and queued only the match.
+- **SELinux is Enforcing** on the deployment host and did not interfere with
+  Caddy (`/usr/bin/caddy` is labelled `bin_t`).
 
 ---
 
@@ -573,5 +663,10 @@ the target repository is public.
    if throughput allows.
 6. **Find a real line-noise discriminator** for `background_noise_type`, which needs labelled
    examples of static, hum and crackle.
-7. **Deploy to the VM and re-measure §9.2 on Linux ARM** — the peak-memory figure is currently
-   Windows-only and is the last unverified number in the hosting section.
+7. ~~Deploy to the VM and re-measure §9.2 on Linux ARM~~ — **done.** 7.26 GiB peak RSS and
+   192.4 s mean per-file are now measured on the deployment hardware (§9.2). The one figure still
+   open is the happy-path (LLM available) memory peak, which needs a valid API key and is now the
+   last unverified number in the hosting section.
+8. **Re-confirm the ~2.7-hour batch time is acceptable.** The trial owner accepted "~1 hour" for a
+   50-file batch on the earlier dev-machine projection; the measured deployment figure is ~2.7×
+   that (§9.8 item 2). This should be surfaced explicitly rather than left to be noticed.

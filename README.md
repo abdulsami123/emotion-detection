@@ -76,8 +76,9 @@ print(json.dumps(score_batch(rows, preds), indent=2, default=str))
 
 ## Run the dashboard
 
-Two processes share a SQLite job store, because a 50-file batch takes ~87
-minutes and no HTTP request survives that:
+Two processes share a SQLite job store, because a 50-file batch takes ~2.7
+hours on the deployment hardware (was projected at ~87 minutes on the x86
+dev machine — see `docs/MEMO.md` §9.2) and no HTTP request survives that:
 
 ```bash
 export AUTOACE_DATA_DIR=./_data
@@ -117,34 +118,43 @@ is 3.9). On aarch64 Linux the default PyPI `torch` build is the CUDA build, so
 the script installs the CPU-only wheel explicitly before the rest of
 `requirements.txt`.
 
-**Instance:** Oracle Cloud Always Free, `VM.Standard.A1.Flex`, **2 OCPU / 12 GB**,
-aarch64, Python 3.12.
+**Instance:** Oracle Cloud Always Free, `VM.Standard.A1.Flex`, **2 OCPU / 12 GB
+(10.9 GB usable)**, Ampere Neoverse-N1 aarch64, Python 3.12.
 
 2 OCPU rather than the free 4 because the extra cores buy only 1.1–1.2×, and
 smaller shape requests are far more likely to be granted — `Out of host
 capacity` is common for the free ARM shape.
 
-**2 OCPU is a floor, not a preference.** Dropping to 1 costs **2.30×** (measured;
-see the memo's latency table), taking a 50-file batch from ~87 minutes to ~202
-minutes. The shape form defaults to 1 OCPU / 6 GB — raise both sliders. 6 GB is
-also below the 5.67 GiB measured peak once the OS and Caddy are accounted for.
-If 2 OCPU is refused, change Availability Domain and retry rather than accepting
-1.
+**2 OCPU is a floor, not a preference.** Dropping to 1 costs **2.30×** on the
+x86 dev machine (measured; see the memo's latency table, not re-verified on
+ARM). On the deployment hardware itself, a 50-file batch measures **~160
+minutes (~2.7 hours)** at 2 threads — well above the ~87-minute figure
+projected earlier on the dev machine; Ampere Neoverse-N1 cores are 1.78–1.96×
+slower per file than the x86 dev box at the same thread count. The shape form
+defaults to 1 OCPU / 6 GB — raise both sliders. 6 GB is also below the **7.26
+GiB measured peak** (deployment hardware, `/usr/bin/time -v` max RSS) once
+the OS and Caddy are accounted for — this retroactively confirms a 6 GB
+shape would have OOM-killed the worker. If 2 OCPU is refused, change
+Availability Domain and retry rather than accepting 1.
 
-**Why not a PaaS free tier.** The worker's measured peak is **5.67 GiB**.
-Render's free tier is 512 MB — off by 11×. Every other free tier surveyed
-(Hugging Face Spaces, Railway, Fly.io/Koyeb/Northflank, AWS/GCP/Azure micro
-VMs) is 256 MB–1 GB; none come close. See the memo's hosting section for the
-full table and reasons.
+**Why not a PaaS free tier.** The worker's measured peak on the deployment
+hardware is **7.26 GiB**. Render's free tier is 512 MB — off by ~14.5×.
+Every other free tier surveyed (Hugging Face Spaces, Railway,
+Fly.io/Koyeb/Northflank, AWS/GCP/Azure micro VMs) is 256 MB–1 GB; none come
+close. See the memo's hosting section for the full table and reasons.
 
 **TLS:** Caddy reverse-proxies `127.0.0.1:7860` to a free `duckdns.org`
 hostname, obtaining a real Let's Encrypt certificate. DuckDNS specifically,
 not `nip.io`/`sslip.io` — DuckDNS is on the Public Suffix List so it gets its
 own Let's Encrypt rate-limit quota; the others are not on the list and share
-one chronically-exhausted quota.
+one chronically-exhausted quota. **Verified in production:** live at
+`https://edetection.duckdns.org` with a certificate valid to 19 Nov 2026 and
+an HTTP→HTTPS 308 redirect.
 
-**Swap:** a 4 GiB swapfile insures the gap between the 3.91 GiB steady state
-and the 5.67 GiB transient peak. Swapping is slow, but slow beats an OOM kill.
+**Swap:** a 4 GiB swapfile insures the gap between the 3.91 GiB dev-machine
+steady state and the dev-machine transient peak. On the deployment hardware
+the measured peak is 7.26 GiB and the run never swapped (`Swaps: 0`).
+Swapping is slow, but slow beats an OOM kill.
 
 **Two things `setup.sh` cannot do, because they are Oracle console operations
 rather than in-VM state:**

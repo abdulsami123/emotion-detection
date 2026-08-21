@@ -478,9 +478,10 @@ def poll_job(job_id: str):
 def build_app() -> gr.Blocks:
     """The UI. Construction only - never calls `.launch()`.
 
-    Asynchronous by necessity: a 50-file batch is ~87 minutes, so the upload
-    handler only enqueues and a `gr.Timer` polls the job store. Closing the tab
-    stops the timer but not the worker, which is why the job-ID box exists.
+    Asynchronous by necessity: a 50-file batch is ~2.7 hours on the deployment
+    hardware, so the upload handler only enqueues and a `gr.Timer` polls the
+    job store. Closing the tab stops the timer but not the worker, which is
+    why the job-ID box exists.
     """
     with gr.Blocks(title="AutoAce - Call Tone Review") as demo:
         gr.Markdown(
@@ -488,7 +489,7 @@ def build_app() -> gr.Blocks:
             "Upload a folder or ZIP containing audio files plus one CSV "
             "manifest (`name,result_json`). Validation runs before any "
             "inference. Processing happens in the background at roughly "
-            "**105 s per file**, so a 50-file batch takes about 90 minutes - "
+            "**192 s per file**, so a 50-file batch takes about 2.7 hours - "
             "**keep the job ID**, close the page if you like, and paste the ID "
             "back in to return to your results. Rows flagged for human review "
             "(low confidence or conflicting signals) sort to the top."
