@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# Idempotent provisioning for the AutoAce Oracle ARM VM
-# (VM.Standard.A1.Flex, 2 OCPU / 12 GiB, Ubuntu 24.04 aarch64, Python 3.12).
+# Idempotent provisioning for the AutoAce host.
+#
+# Supports two distros, detected at runtime:
+#   - Ubuntu 24.04 aarch64 (apt), the original target.
+#   - Oracle Linux 9 aarch64 (dnf) - the distro actually used for the live
+#     deployment (verified on Oracle Linux Server 9.8, aarch64, 2 OCPU,
+#     ~10 GiB usable RAM).
 #
 # Safe to re-run: every step checks existing state before acting. Run this
 # script as a user with passwordless (or interactive) sudo, e.g.:
@@ -16,66 +21,163 @@ HF_DIR="/opt/autoace/hf"
 # needs its own explicit absolute cache dir or every process re-downloads it.
 MODELS_DIR=/opt/autoace/models
 ENV_FILE="/etc/autoace.env"
-APP_USER="ubuntu"
+
+# App user is never hardcoded to "ubuntu": default to the user who invoked
+# sudo, fall back to the current user, and let the operator override.
+APP_USER="${AUTOACE_APP_USER:-${SUDO_USER:-$(id -un)}}"
 
 log() {
 	printf '==> %s\n' "$*"
 }
 
-# ---------------------------------------------------------------- packages
-log "Installing base packages"
-sudo apt-get update -y
-sudo apt-get install -y \
-	python3.12-venv \
-	python3-pip \
-	git \
-	ffmpeg \
-	libsndfile1 \
-	curl \
-	debian-keyring \
-	debian-archive-keyring \
-	apt-transport-https \
-	gnupg
+# --------------------------------------------------------------- distro detect
+if command -v dnf >/dev/null 2>&1; then
+	PKG=dnf
+elif command -v apt-get >/dev/null 2>&1; then
+	PKG=apt
+else
+	echo "Unsupported distro: neither dnf nor apt-get found" >&2
+	exit 1
+fi
+log "Detected package manager: $PKG (app user: $APP_USER)"
 
-# Needed for the idempotent firewall rules below (netfilter-persistent save).
-# Oracle's stock Ubuntu images normally ship this already; installed here
-# defensively in case a bare image does not.
-if ! command -v netfilter-persistent >/dev/null 2>&1; then
+# ---------------------------------------------------------------- packages
+# ffmpeg and libsndfile are intentionally NOT installed. soundfile bundles
+# libsndfile in its wheel (_soundfile_data/), and PyAV (used by
+# faster-whisper) bundles the ffmpeg libraries (av.libs, ~63 MB). Nothing in
+# this codebase shells out to an ffmpeg binary, so the package is dead
+# weight - and on Oracle Linux 9 it isn't even in the base repos (needs
+# EPEL + RPM Fusion), so dropping it removes the only hard package blocker.
+log "Installing base packages"
+if [ "$PKG" = dnf ]; then
+	sudo dnf install -y \
+		python3.12 \
+		python3.12-pip \
+		git \
+		curl
+else
+	sudo apt-get update -y
+	sudo apt-get install -y \
+		python3.12-venv \
+		python3-pip \
+		git \
+		curl \
+		debian-keyring \
+		debian-archive-keyring \
+		apt-transport-https \
+		gnupg
+fi
+
+# Needed for the idempotent iptables firewall rules below
+# (netfilter-persistent save). Only relevant on the apt/iptables path -
+# firewalld (dnf path) manages its own persistence.
+if [ "$PKG" = apt ] && ! command -v netfilter-persistent >/dev/null 2>&1; then
 	sudo apt-get install -y iptables-persistent
 fi
 
 # -------------------------------------------------------------------- caddy
 if ! command -v caddy >/dev/null 2>&1; then
-	log "Installing Caddy from its official apt repo"
-	curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-		| sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-	curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
-		| sudo tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
-	sudo apt-get update -y
-	sudo apt-get install -y caddy
+	if [ "$PKG" = apt ]; then
+		log "Installing Caddy from its official apt repo"
+		curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+			| sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+		curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+			| sudo tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
+		sudo apt-get update -y
+		sudo apt-get install -y caddy
+	else
+		# Caddy is not packaged for Oracle Linux 9. Download the static
+		# binary for the current arch from the GitHub latest release.
+		log "Installing Caddy static binary from the latest GitHub release"
+		ARCH=$(uname -m)
+		case "$ARCH" in
+			aarch64) CADDY_ARCH=arm64 ;;
+			x86_64) CADDY_ARCH=amd64 ;;
+			*)
+				echo "unsupported arch $ARCH" >&2
+				exit 1
+				;;
+		esac
+		CADDY_URL=$(curl -fsSL https://api.github.com/repos/caddyserver/caddy/releases/latest \
+			| grep -o "https://[^\"]*linux_${CADDY_ARCH}\.tar\.gz" | head -1)
+		curl -fsSL "$CADDY_URL" -o /tmp/caddy.tgz
+		tar -xzf /tmp/caddy.tgz -C /tmp caddy
+		sudo install -m 0755 /tmp/caddy /usr/bin/caddy
+		rm -f /tmp/caddy.tgz /tmp/caddy
+
+		# No packaged unit on this distro, so we own the systemd unit and
+		# the caddy user/dirs ourselves. Idempotent.
+		if ! id caddy >/dev/null 2>&1; then
+			log "Creating caddy system user"
+			sudo useradd --system --home /var/lib/caddy --shell /usr/sbin/nologin caddy
+		fi
+		sudo mkdir -p /var/lib/caddy /etc/caddy
+		sudo chown caddy:caddy /var/lib/caddy
+
+		log "Writing caddy.service (upstream shape; not packaged on dnf distros)"
+		sudo tee /etc/systemd/system/caddy.service >/dev/null <<'CADDYUNITEOF'
+[Unit]
+Description=Caddy
+Documentation=https://caddyserver.com/docs/
+After=network.target network-online.target
+Requires=network-online.target
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --force
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+PrivateTmp=true
+ProtectSystem=full
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+CADDYUNITEOF
+	fi
 else
 	log "Caddy already installed, skipping"
 fi
 
 # ----------------------------------------------------------------- firewall
-# Oracle's stock Ubuntu images ship iptables rules that DROP everything
-# except SSH. The VCN security list can look perfectly correct while the
-# host's own netfilter rules still refuse the connection - this is the single
-# most common way this deploy fails. Port 80 must stay open PERMANENTLY, not
-# just for first issuance: Caddy's ACME renewals reuse it, not only HTTPS 443.
+# Oracle's stock images ship host firewall rules that DROP everything except
+# SSH. The VCN security list can look perfectly correct while the host's own
+# firewall still refuses the connection - this is the single most common way
+# this deploy fails. Port 80 must stay open PERMANENTLY, not just for first
+# issuance: Caddy's ACME renewals reuse it, not only HTTPS 443.
 log "Opening 80/443 in the host firewall"
-for port in 80 443; do
-	if ! sudo iptables -C INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null; then
-		sudo iptables -I INPUT 6 -p tcp --dport "$port" -j ACCEPT
+if command -v firewall-cmd >/dev/null 2>&1 && sudo systemctl is-active --quiet firewalld; then
+	# firewalld (Oracle Linux 9 default): manages nftables under the hood,
+	# so poking iptables directly here would be a no-op. --permanent +
+	# --reload is already idempotent.
+	sudo firewall-cmd --permanent --add-service=http --add-service=https
+	sudo firewall-cmd --reload
+else
+	# iptables path (Ubuntu default).
+	for port in 80 443; do
+		if ! sudo iptables -C INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null; then
+			sudo iptables -I INPUT 6 -p tcp --dport "$port" -j ACCEPT
+		fi
+	done
+	if command -v netfilter-persistent >/dev/null 2>&1; then
+		sudo netfilter-persistent save
+	else
+		log "netfilter-persistent not found, skipping rule persistence"
 	fi
-done
-sudo netfilter-persistent save
+fi
 
 # --------------------------------------------------------------------- swap
 # Insurance for the measured 5.67 GiB transient worker peak against a 3.91
-# GiB steady state on a 12 GiB box. Swapping is slow, but slow beats an OOM
-# kill of the worker mid-job.
-if [ ! -f /swapfile ]; then
+# GiB steady state. Swapping is slow, but slow beats an OOM kill of the
+# worker mid-job. Oracle Linux 9 ships 4 GiB already active at /.swapfile
+# (note the leading dot, unlike Ubuntu's /swapfile), so check for existing
+# active swap rather than a hardcoded path, or this would create a
+# redundant second swapfile.
+EXISTING_SWAP_BYTES=$(swapon --show=SIZE --noheadings --bytes 2>/dev/null | awk '{sum += $1} END {print sum+0}')
+if [ "$EXISTING_SWAP_BYTES" -lt 2000000000 ]; then
 	log "Creating 4 GiB swapfile"
 	sudo fallocate -l 4G /swapfile
 	sudo chmod 600 /swapfile
@@ -83,7 +185,7 @@ if [ ! -f /swapfile ]; then
 	sudo swapon /swapfile
 	echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
 else
-	log "Swapfile already present, skipping"
+	log "At least 2 GiB of swap already active, skipping"
 fi
 
 # ---------------------------------------------------------- data directories
@@ -107,13 +209,24 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
 	sudo -u "$APP_USER" python3.12 -m venv "$VENV_DIR"
 fi
 log "Installing Python dependencies (this takes a while on first run)"
-sudo -u "$APP_USER" "$VENV_DIR/bin/pip" install --upgrade pip
+sudo -u "$APP_USER" "$VENV_DIR/bin/pip" install --quiet --upgrade pip
+# CPU-only torch FIRST. On aarch64 Linux the default PyPI torch is the CUDA
+# build and drags in ~5 GB of nvidia_* wheels that are dead weight here.
+# Windows defaults to CPU, which is why this never showed up in development.
+sudo -u "$APP_USER" "$VENV_DIR/bin/pip" install --index-url https://download.pytorch.org/whl/cpu \
+	'torch>=2.13' 'torchaudio>=2.11'
+# Everything else from PyPI. torch/torchaudio are already satisfied, so the
+# resolver will not pull the CUDA build.
 sudo -u "$APP_USER" "$VENV_DIR/bin/pip" install -r "$REPO_DIR/requirements.txt"
 
 # ---------------------------------------------------------------- unit files
 log "Installing systemd units"
-sudo cp "$REPO_DIR/deploy/autoace-web.service" /etc/systemd/system/autoace-web.service
-sudo cp "$REPO_DIR/deploy/autoace-worker.service" /etc/systemd/system/autoace-worker.service
+# The in-repo units default to User=ubuntu; rewrite that line to the actual
+# app user derived above rather than hardcoding it (or requiring a template).
+sed "s/^User=.*/User=${APP_USER}/" "$REPO_DIR/deploy/autoace-web.service" \
+	| sudo tee /etc/systemd/system/autoace-web.service >/dev/null
+sed "s/^User=.*/User=${APP_USER}/" "$REPO_DIR/deploy/autoace-worker.service" \
+	| sudo tee /etc/systemd/system/autoace-worker.service >/dev/null
 sudo cp "$REPO_DIR/deploy/duckdns.service" /etc/systemd/system/duckdns.service
 sudo cp "$REPO_DIR/deploy/duckdns.timer" /etc/systemd/system/duckdns.timer
 sudo chmod +x "$REPO_DIR/deploy/duckdns.sh"

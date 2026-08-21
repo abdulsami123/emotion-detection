@@ -110,8 +110,15 @@ host firewall, a swapfile, the venv, both systemd units, and a model-cache
 warm-up. Design and rationale for every choice below are in
 `docs/superpowers/specs/2026-08-19-hosted-dashboard-design.md`.
 
+The script supports **Ubuntu 24.04 (apt) and Oracle Linux 9 (dnf)**, detected
+automatically. The actual deployment was done on **Oracle Linux 9.8 aarch64**,
+with Python 3.12 installed from the `ol9_appstream` repo (the system default
+is 3.9). On aarch64 Linux the default PyPI `torch` build is the CUDA build, so
+the script installs the CPU-only wheel explicitly before the rest of
+`requirements.txt`.
+
 **Instance:** Oracle Cloud Always Free, `VM.Standard.A1.Flex`, **2 OCPU / 12 GB**,
-Ubuntu 24.04 aarch64, Python 3.12.
+aarch64, Python 3.12.
 
 2 OCPU rather than the free 4 because the extra cores buy only 1.1–1.2×, and
 smaller shape requests are far more likely to be granted — `Out of host

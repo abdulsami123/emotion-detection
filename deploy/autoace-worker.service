@@ -5,6 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# User is rewritten by deploy/setup.sh to the derived app user (default:
+# SUDO_USER, else the current user, overridable via AUTOACE_APP_USER).
+# ubuntu is only the in-repo default for a fresh checkout.
 User=ubuntu
 WorkingDirectory=/opt/autoace/repo
 EnvironmentFile=/etc/autoace.env
