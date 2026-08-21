@@ -13,15 +13,15 @@ Two invariants drive every decision here:
      computed and locked in BEFORE the tone branch is attempted at all.
 
 Tone path (two-tier, per task 14):
-  1. Try `classify_tone` (Haiku). On success, use its tone, its intensity
-     as the LLM voter, and its reasoning.
-  2. On ANY exception (e.g. the Haiku call fails), fall back to
+  1. Try `classify_tone` (the LLM, `config.LLM_MODEL`). On success, use its
+     tone, its intensity as the LLM voter, and its reasoning.
+  2. On ANY exception (e.g. the LLM call fails), fall back to
      `classify_tone_nli` over the customer transcript text and take the
      argmax as the tone. `tone_voters_agree` is forced False - there is
      only one working tone voter, and confidence must reflect that.
   3. Only if BOTH fail does the tone degrade to `EmotionalTone.NEUTRAL`.
 
-Whichever path ran is recorded in `FileResult.reasoning` ("haiku" /
+Whichever path ran is recorded in `FileResult.reasoning` (the model name /
 "nli fallback" / "both unavailable") - a silent fallback is operationally
 indistinguishable from success, which is exactly the failure mode an
 on-call engineer cannot afford.
@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 
 from autoace.asr import Word, transcribe
-from autoace.config import REVIEW_THRESHOLD, SAMPLE_RATE
+from autoace.config import LLM_MODEL, REVIEW_THRESHOLD, SAMPLE_RATE
 from autoace.diarize import assign_speakers
 from autoace.fuse import (
     ConfidenceInputs,
@@ -270,9 +270,9 @@ def analyse_file(path: str) -> FileResult:
             llm_intensity = response.emotional_intensity
             llm_self_confidence = response.self_confidence
             tone_voters_agree = True
-            tone_path = "haiku"
-            tone_path_detail = f"haiku: {response.reasoning}"
-        except Exception as haiku_exc:  # noqa: BLE001 - two-tier fallback boundary
+            tone_path = LLM_MODEL
+            tone_path_detail = f"{LLM_MODEL}: {response.reasoning}"
+        except Exception as llm_exc:  # noqa: BLE001 - two-tier fallback boundary
             try:
                 nli_scores = classify_tone_nli(customer_text)
                 tone = EmotionalTone(max(nli_scores, key=nli_scores.get))
@@ -283,7 +283,7 @@ def analyse_file(path: str) -> FileResult:
                 tone_voters_agree = False
                 tone_path = "nli fallback"
                 tone_path_detail = (
-                    f"nli fallback: haiku unavailable ({haiku_exc}); "
+                    f"nli fallback: {LLM_MODEL} unavailable ({llm_exc}); "
                     "used NLI argmax over the customer transcript"
                 )
             except Exception as nli_exc:  # noqa: BLE001
@@ -292,7 +292,7 @@ def analyse_file(path: str) -> FileResult:
                 tone_voters_agree = False
                 tone_path = "both unavailable"
                 tone_path_detail = (
-                    f"both unavailable: haiku failed ({haiku_exc}) and NLI failed "
+                    f"both unavailable: {LLM_MODEL} failed ({llm_exc}) and NLI failed "
                     f"({nli_exc}); degraded to neutral"
                 )
     except Exception as branch_exc:  # noqa: BLE001 - the top-level fail-isolation boundary
@@ -320,7 +320,10 @@ def analyse_file(path: str) -> FileResult:
             # voters disagreeing: this is a MISSING voter, and it hard-caps
             # confidence below REVIEW_THRESHOLD so the call always reaches a
             # human rather than shipping as if it were confidently classified.
-            llm_unavailable=(tone_path != "haiku"),
+            # Compared against the config constant, not a literal: an earlier
+            # revision hard-coded "haiku" here, so renaming the path label would
+            # have silently inverted this flag and mis-capped confidence.
+            llm_unavailable=(tone_path != LLM_MODEL),
         )
     )
 

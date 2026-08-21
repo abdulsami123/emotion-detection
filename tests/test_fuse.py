@@ -148,3 +148,49 @@ def test_llm_available_is_the_default_and_unpenalised():
     )
     assert inputs.llm_unavailable is False
     assert compute_confidence(inputs) > 0.85
+
+
+def test_no_stale_vendor_name_in_user_visible_strings():
+    """The tone-path label is user-visible: it lands in FileResult.reasoning,
+    the dashboard's notes column, and the CSV/JSON exports. An earlier revision
+    hard-coded the previous vendor's model name there while the system actually
+    calls `config.LLM_MODEL`, so a reviewer reading the deliverable would have
+    concluded the wrong provider was used.
+
+    It was load-bearing, not merely cosmetic: `llm_unavailable` was derived from
+    `tone_path != "<literal>"`, so that literal controlled the confidence cap.
+
+    Checked via AST over string CONSTANTS only, skipping docstrings and
+    comments - prose that accurately records the history of the provider swap
+    is wanted, and a naive text grep flags it.
+    """
+    import ast
+    import pathlib
+
+    from autoace.config import LLM_MODEL
+
+    src_dir = pathlib.Path(__file__).resolve().parent.parent / "autoace"
+    offenders = []
+    for path in sorted(src_dir.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        docstrings = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)):
+                doc = ast.get_docstring(node, clean=False)
+                if doc is not None:
+                    docstrings.add(doc)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if node.value in docstrings:
+                    continue
+                if "haiku" in node.value.lower():
+                    offenders.append(f"{path.name}:{node.lineno}: {node.value[:70]!r}")
+
+    assert not offenders, "superseded vendor name in a runtime string: " + "; ".join(
+        offenders
+    )
+    assert LLM_MODEL == "gpt-4o-mini", (
+        "the reasoning string follows LLM_MODEL automatically; this only pins "
+        "the currently-deployed choice"
+    )
