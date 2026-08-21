@@ -174,13 +174,17 @@ def test_enqueue_batch_reports_the_job_id_in_its_status(tmp_path, monkeypatch):
 
 
 def test_enqueue_batch_records_a_validation_failure_as_a_failed_job(tmp_path, monkeypatch):
-    """A batch with no manifest must produce a job row carrying the reason, so
+    """A manifest whose rows all reference absent audio is a genuine
+    batch-authoring error; it must produce a job row carrying the reason, so
     a job-ID lookup can still explain it after a reload."""
     app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
 
     batch = tmp_path / "batch"
     batch.mkdir()
-    (batch / "a.ogg").write_bytes(b"stub")
+    (batch / "present.ogg").write_bytes(b"stub")
+    (batch / "m.csv").write_text(
+        "name,result_json\nabsent.ogg,\n", encoding="utf-8"
+    )
 
     job_id, status = app_module.enqueue_batch(str(batch))
 
@@ -221,6 +225,100 @@ def test_enqueue_batch_warns_about_unmatched_files_but_still_queues(tmp_path, mo
     assert job_id
     assert "missing.ogg" in status, "a manifest row with no audio must be named"
     assert "orphan.ogg" in status, "audio with no manifest row must be named"
+
+
+def test_enqueue_batch_without_a_manifest_processes_every_clip(tmp_path, monkeypatch):
+    """The brief's format includes a manifest, but it never says to reject a
+    batch that lacks one - and for an unlabeled hidden test set result_json
+    "may be empty or omitted", leaving a filename list the directory already
+    provides. Rejecting the upload processed nothing, which is what the trial
+    owner hit on their first attempt."""
+    app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    for name in ("a.ogg", "b.ogg", "c.ogg"):
+        (batch / name).write_bytes(b"stub")
+
+    job_id, status = app_module.enqueue_batch(str(batch))
+
+    assert job_id
+    conn = jobs_module.connect()
+    try:
+        st = jobs_module.job_status(conn, job_id)
+        assert st.status == "pending"
+        assert st.total == 3, "every discovered clip must be queued"
+        assert st.manifest_labelled is False
+    finally:
+        conn.close()
+    assert "manifest" in status.lower(), "the absence must still be reported"
+
+
+def test_enqueue_batch_without_a_manifest_offers_no_scoring(tmp_path, monkeypatch):
+    """No manifest means no ground truth, so nothing to score against."""
+    app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
+
+    from autoace.pipeline import FileResult
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    (batch / "a.ogg").write_bytes(b"stub")
+
+    job_id, _ = app_module.enqueue_batch(str(batch))
+    conn = jobs_module.connect()
+    try:
+        claimed = jobs_module.claim_next(conn)
+        jobs_module.complete(
+            conn, claimed, FileResult(name=claimed.name, analysis=_analysis())
+        )
+    finally:
+        conn.close()
+
+    _, rows, csv_path, json_path, scoring = app_module.poll_job(job_id)
+    assert len(rows) == 1
+    assert csv_path and json_path, "results must still be downloadable"
+    assert scoring == ""
+
+
+def test_enqueue_batch_fails_when_a_manifest_matches_nothing(tmp_path, monkeypatch):
+    """A manifest whose every row references absent audio is a genuine
+    authoring error, distinct from having no manifest at all."""
+    app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    (batch / "present.ogg").write_bytes(b"stub")
+    (batch / "m.csv").write_text(
+        "name,result_json\nabsent1.ogg,\nabsent2.ogg,\n", encoding="utf-8"
+    )
+
+    job_id, status = app_module.enqueue_batch(str(batch))
+
+    conn = jobs_module.connect()
+    try:
+        st = jobs_module.job_status(conn, job_id)
+        assert st.status == "failed"
+        assert st.total == 0
+    finally:
+        conn.close()
+    assert "absent1.ogg" in status
+
+
+def test_enqueue_batch_fails_on_an_empty_upload(tmp_path, monkeypatch):
+    """No manifest and no audio is genuinely nothing to do."""
+    app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+
+    job_id, status = app_module.enqueue_batch(str(batch))
+
+    conn = jobs_module.connect()
+    try:
+        assert jobs_module.job_status(conn, job_id).status == "failed"
+    finally:
+        conn.close()
+    assert status
 
 
 def test_poll_job_projects_rows_into_the_existing_table_shape(tmp_path, monkeypatch):
@@ -285,12 +383,17 @@ def test_poll_job_with_no_id_is_a_no_op(tmp_path, monkeypatch):
 
 
 def test_poll_job_surfaces_a_validation_failure(tmp_path, monkeypatch):
-    """A failed batch looked up by ID must still explain itself."""
+    """A failed batch looked up by ID must still explain itself. A manifest
+    whose rows all reference absent audio is a genuine authoring error,
+    distinct from having no manifest at all."""
     app_module, _ = _reload_modules(monkeypatch, tmp_path)
 
     batch = tmp_path / "batch"
     batch.mkdir()
-    (batch / "a.ogg").write_bytes(b"stub")
+    (batch / "present.ogg").write_bytes(b"stub")
+    (batch / "m.csv").write_text(
+        "name,result_json\nabsent.ogg,\n", encoding="utf-8"
+    )
 
     job_id, _ = app_module.enqueue_batch(str(batch))
     status_md, rows, csv_path, json_path, scoring = app_module.poll_job(job_id)

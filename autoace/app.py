@@ -278,21 +278,44 @@ def _prepare_workdir(upload) -> Path:
 
 
 def _describe_validation(workdir: Path, validation: BatchValidation) -> list[str]:
-    """Human-readable problems found before any inference runs.
+    """Human-readable problems (and, for a missing manifest, plain
+    information) found before any inference runs.
 
     Extracted from the old `run_batch` unchanged in substance: the brief
     requires unmatched files to be reported rather than silently skipped, and
     that has to happen at enqueue time, not when the worker gets there.
+
+    A missing manifest is no longer treated as an error - the brief never
+    says to reject a batch for lacking one, and `enqueue_batch` now processes
+    every discovered clip in that case. So this reports it as information
+    (what will happen, and that scoring needs a manifest), not a problem.
     """
     problems: list[str] = []
     if validation.manifest_path is None:
-        problems.append("No CSV manifest found in the upload.")
+        clip_count = sum(1 for _ in _iter_audio_files(workdir))
+        if clip_count:
+            problems.append(
+                f"No CSV manifest found - processing all {clip_count} "
+                "discovered audio clip(s). Nothing to cross-check, so no "
+                "scoring is available; include a manifest with a populated "
+                "`result_json` column to get scoring metrics."
+            )
+        else:
+            problems.append(
+                "No CSV manifest found, and no supported audio files were "
+                "found either - nothing to process."
+            )
     if validation.missing_audio:
         problems.append(
             "Manifest rows with no matching audio file: "
             + ", ".join(validation.missing_audio)
         )
-    if validation.unlisted_audio:
+    if validation.unlisted_audio and validation.manifest_path is not None:
+        # With no manifest at all, `unlisted_audio` is every audio file (there
+        # is nothing to list it against) - and unlike the manifest-present
+        # case, those files ARE processed, so the "will not be processed"
+        # wording would be wrong. The no-manifest message above already
+        # covers it.
         problems.append(
             "Audio files with no manifest row (will not be processed): "
             + ", ".join(validation.unlisted_audio)
@@ -310,6 +333,18 @@ def enqueue_batch(upload) -> tuple[str, str]:
 
     Returns as soon as the rows are written - the worker does the work. An
     empty `job_id` means nothing was queued and there is nothing to poll.
+
+    The manifest is optional, not mandatory: the brief's format includes one,
+    and validation always checks against it when present, but nothing in the
+    brief says to reject an upload for lacking one - and for an unlabeled
+    hidden test set the manifest may carry nothing scoring needs anyway.
+
+      - Manifest present: only `validation.matched` is queued, exactly as
+        before. Zero matches means every row references audio that is not in
+        the upload - a genuine batch-authoring error, so that still fails.
+      - No manifest: every supported audio file discovered is queued,
+        unlabelled, with nothing to cross-check. Only an upload with no
+        audio either fails.
     """
     if upload is None:
         return "", "No file uploaded."
@@ -328,33 +363,49 @@ def enqueue_batch(upload) -> tuple[str, str]:
 
     conn = jobs.connect()
     try:
-        if not validation.matched:
-            reason = "Validation failed - nothing to process.\n" + "\n".join(
-                f"- {p}" for p in problems
-            )
-            job_id = jobs.enqueue_failed(
-                conn, workdir=workdir, validation_json=validation_json, error=reason
-            )
-            return job_id, reason
-
-        audio_by_name: dict[str, Path] = {}
-        for path in _iter_audio_files(workdir):
-            audio_by_name.setdefault(path.name, path)
-        matched_audio = {name: audio_by_name[name] for name in validation.matched}
-
-        manifest_labelled = False
-        manifest_csv = None
         if validation.manifest_path is not None:
+            if not validation.matched:
+                reason = "Validation failed - nothing to process.\n" + "\n".join(
+                    f"- {p}" for p in problems
+                )
+                job_id = jobs.enqueue_failed(
+                    conn, workdir=workdir, validation_json=validation_json,
+                    error=reason,
+                )
+                return job_id, reason
+
+            audio_by_name: dict[str, Path] = {}
+            for path in _iter_audio_files(workdir):
+                audio_by_name.setdefault(path.name, path)
+            queued_audio = {name: audio_by_name[name] for name in validation.matched}
+
             manifest_csv = validation.manifest_path.read_text(encoding="utf-8")
             manifest_labelled = any(
                 row.expected is not None
                 for row in load_manifest(str(validation.manifest_path))
             )
+        else:
+            queued_audio = {}
+            for path in _iter_audio_files(workdir):
+                queued_audio.setdefault(path.name, path)
+
+            if not queued_audio:
+                reason = "Validation failed - nothing to process.\n" + "\n".join(
+                    f"- {p}" for p in problems
+                )
+                job_id = jobs.enqueue_failed(
+                    conn, workdir=workdir, validation_json=validation_json,
+                    error=reason,
+                )
+                return job_id, reason
+
+            manifest_csv = None
+            manifest_labelled = False
 
         job_id = jobs.enqueue(
             conn,
             workdir=workdir,
-            audio_by_name=matched_audio,
+            audio_by_name=queued_audio,
             validation_json=validation_json,
             manifest_labelled=manifest_labelled,
             manifest_csv=manifest_csv,
@@ -363,14 +414,14 @@ def enqueue_batch(upload) -> tuple[str, str]:
         conn.close()
 
     lines = [
-        f"**Queued {len(matched_audio)} file(s).** Job ID: `{job_id}`",
+        f"**Queued {len(queued_audio)} file(s).** Job ID: `{job_id}`",
         "",
         "Keep this job ID. You can close the page and paste it into the "
         "**Look up a job** box to come back to these results.",
     ]
     if problems:
         lines.append("")
-        lines.append("Validation warnings:")
+        lines.append("Validation notes:")
         lines.extend(f"- {p}" for p in problems)
     return job_id, "\n".join(lines)
 
@@ -486,9 +537,12 @@ def build_app() -> gr.Blocks:
     with gr.Blocks(title="AutoAce - Call Tone Review") as demo:
         gr.Markdown(
             "# AutoAce batch review\n"
-            "Upload a folder or ZIP containing audio files plus one CSV "
-            "manifest (`name,result_json`). Validation runs before any "
-            "inference. Processing happens in the background at roughly "
+            "Upload a folder or ZIP containing audio files. A CSV manifest "
+            "(`name,result_json`) is optional - include one to cross-check "
+            "filenames and get scoring metrics when `result_json` is "
+            "populated; without one, every supported clip found is "
+            "processed. Validation runs before any inference. Processing "
+            "happens in the background at roughly "
             "**192 s per file**, so a 50-file batch takes about 2.7 hours - "
             "**keep the job ID**, close the page if you like, and paste the ID "
             "back in to return to your results. Rows flagged for human review "
