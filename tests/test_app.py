@@ -657,3 +657,106 @@ def test_expire_removes_the_export_directory(tmp_path, monkeypatch):
 
     assert removed == 1
     assert not (EXPORTS_DIR / job_id).exists()
+
+
+def _make_zip(path: Path, entries: dict) -> Path:
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data)
+    return path
+
+
+def test_zip_uploaded_as_a_list_is_extracted(tmp_path, monkeypatch):
+    """gr.File(file_count="multiple") ALWAYS hands over a list, even for one
+    file, so this is the shape a real browser ZIP upload takes. An earlier
+    version only extracted in the scalar branch, so the archive was copied
+    unopened, no audio was found, and the batch failed with a misleading
+    validation message. The brief requires ZIP upload, and the original tests
+    missed this because they passed a bare path string - a shape Gradio never
+    produces."""
+    app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
+
+    z = _make_zip(
+        tmp_path / "calls.zip",
+        {
+            "calls/call_001.ogg": b"stub",
+            "calls/call_002.ogg": b"stub",
+            "calls/call_003.ogg": b"stub",
+        },
+    )
+
+    job_id, status = app_module.enqueue_batch([str(z)])
+
+    assert job_id
+    conn = jobs_module.connect()
+    try:
+        st = jobs_module.job_status(conn, job_id)
+        assert st.status == "pending"
+        assert st.total == 3, f"all three clips must be queued; status was: {status}"
+    finally:
+        conn.close()
+
+
+def test_zip_with_a_manifest_inside_still_validates(tmp_path, monkeypatch):
+    """A nested wrapper directory must validate the same as a flat one."""
+    app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
+
+    z = _make_zip(
+        tmp_path / "batch.zip",
+        {
+            "batch/a.ogg": b"stub",
+            "batch/m.csv": "name,result_json\na.ogg,\nmissing.ogg,\n",
+        },
+    )
+
+    job_id, status = app_module.enqueue_batch([str(z)])
+
+    conn = jobs_module.connect()
+    try:
+        st = jobs_module.job_status(conn, job_id)
+        assert st.total == 1
+    finally:
+        conn.close()
+    assert "missing.ogg" in status, "the manifest inside the zip must be honoured"
+
+
+def test_corrupt_zip_fails_the_job_without_raising(tmp_path, monkeypatch):
+    """An unreadable archive is the whole batch, so it cannot be isolated to one
+    file - but it must still surface as a failed job with a reason rather than a
+    traceback at the UI."""
+    app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
+
+    bad = tmp_path / "broken.zip"
+    bad.write_bytes(b"definitely not a zip")
+
+    job_id, status = app_module.enqueue_batch([str(bad)])
+
+    conn = jobs_module.connect()
+    try:
+        assert jobs_module.job_status(conn, job_id).status == "failed"
+    finally:
+        conn.close()
+    assert "zip" in status.lower()
+
+
+def test_macos_zip_metadata_is_not_reported_as_unsupported(tmp_path, monkeypatch):
+    """A ZIP made on macOS carries __MACOSX/ and .DS_Store. Unfiltered they show
+    up as "unsupported file formats" and make a good batch look malformed."""
+    app_module, _ = _reload_modules(monkeypatch, tmp_path)
+
+    z = _make_zip(
+        tmp_path / "mac.zip",
+        {
+            "calls/a.ogg": b"stub",
+            "__MACOSX/calls/._a.ogg": b"junk",
+            "calls/.DS_Store": b"junk",
+        },
+    )
+
+    job_id, status = app_module.enqueue_batch([str(z)])
+
+    assert job_id
+    assert "unsupported" not in status.lower(), status
+    assert "DS_Store" not in status

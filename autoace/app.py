@@ -249,6 +249,33 @@ def _resolve_path(item) -> Path:
     return Path(item)
 
 
+class BadUpload(Exception):
+    """The upload itself is unusable - a corrupt archive, say.
+
+    Distinct from one bad file inside an otherwise valid batch, which must never
+    fail the batch. Here there is no batch to salvage, so it is reported as a
+    failed job with a reason rather than raised at the UI.
+    """
+
+
+def _extract_zip(src: Path, dest: Path) -> None:
+    """Extract `src` into `dest`, skipping archive-manager noise.
+
+    `__MACOSX/` and `.DS_Store` are what a ZIP made on macOS carries; without
+    filtering they surface as "unsupported file formats" and make a perfectly
+    good batch look malformed.
+    """
+    try:
+        with zipfile.ZipFile(src) as zf:
+            members = [
+                m for m in zf.namelist()
+                if not m.startswith("__MACOSX/") and not m.endswith(".DS_Store")
+            ]
+            zf.extractall(dest, members=members)
+    except zipfile.BadZipFile as exc:
+        raise BadUpload(f"{src.name} is not a readable ZIP archive ({exc})") from exc
+
+
 def _prepare_workdir(upload) -> Path:
     """Normalise whatever Gradio hands back (a single ZIP path, a single
     folder path, or a list of individual file paths from a multi-file/
@@ -258,7 +285,19 @@ def _prepare_workdir(upload) -> Path:
         for item in upload:
             src = _resolve_path(item)
             dest = workdir / src.name
-            if src.is_dir():
+            if src.suffix.lower() == ".zip":
+                # A ZIP must be EXTRACTED here, not copied.
+                #
+                # `gr.File(file_count="multiple")` always hands over a LIST -
+                # even for a single file - so this is the branch a real browser
+                # ZIP upload actually takes. An earlier version only extracted
+                # in the scalar branch below, so uploading a ZIP through the UI
+                # left the archive sitting unopened in the workdir, no audio was
+                # discovered, and the batch failed with a misleading validation
+                # message. The tests missed it because they passed a bare path
+                # string, which is an input shape Gradio never produces.
+                _extract_zip(src, workdir / src.stem)
+            elif src.is_dir():
                 shutil.copytree(src, dest)
             else:
                 shutil.copy2(src, dest)
@@ -269,8 +308,7 @@ def _prepare_workdir(upload) -> Path:
         return path
     if path.suffix.lower() == ".zip":
         workdir = Path(tempfile.mkdtemp(prefix="autoace_batch_"))
-        with zipfile.ZipFile(path) as zf:
-            zf.extractall(workdir)
+        _extract_zip(path, workdir)
         return workdir
     # A single non-zip file (e.g. one CSV dropped alone): its parent
     # directory is the closest thing to "the batch".
@@ -349,7 +387,22 @@ def enqueue_batch(upload) -> tuple[str, str]:
     if upload is None:
         return "", "No file uploaded."
 
-    workdir = _prepare_workdir(upload)
+    try:
+        workdir = _prepare_workdir(upload)
+    except BadUpload as exc:
+        # There is no batch to salvage, so record a failed job carrying the
+        # reason rather than letting the exception reach the UI.
+        conn = jobs.connect()
+        try:
+            reason = f"Upload could not be read: {exc}"
+            job_id = jobs.enqueue_failed(
+                conn, workdir="", validation_json="{}", error=reason
+            )
+        finally:
+            conn.close()
+        return job_id, reason
+
+    workdir = Path(workdir)
     validation = validate_batch(workdir)
     problems = _describe_validation(workdir, validation)
     validation_json = json.dumps(
