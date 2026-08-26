@@ -232,6 +232,37 @@ duplicate of the preceding utterance's final word. Every transcript therefore
 reads as stammering, biasing the tone classifier toward disfluency and distress
 on every call.
 
+### 3.8 Call-level SER samples 14% of a long call, at fixed offsets
+
+`predict_dimensions` bounds cost with `SER_MAX_WINDOWS=4` windows of
+`SER_WINDOW_S=6.0`, so on call_003 it sees **24s of 171.9s - 14% of the audio**,
+at fixed positions. The bound is right; the sampling is not.
+
+Measured: changing only which audio is fed to the *deployed* audeering model
+moves call_003's valence by **0.071**, while the entire spread across all three
+calls is **0.104**. Window placement therefore moves the measurement **68% as
+much as the difference between different calls.**
+
+| audio fed to SER | call_001 | call_002 | call_003 |
+|---|---|---|---|
+| whole call (as deployed) | 0.534 | 0.638 | 0.549 |
+| customer speech only | 0.502 | 0.448 | 0.478 |
+
+Two consequences:
+
+1. `dims.valence` and `dims.arousal` reach the tone prompt *and*
+   `ConfidenceInputs.ser_consistent`, so an arbitrary input selection propagates
+   into both the classification and its confidence.
+2. It makes any SER model unevaluable here, which is what defeated the candidate
+   trials in section 7.2 - the same model returned three different labels for one
+   call depending only on which windows were sampled.
+
+Note also that `predict_dimensions(y)` receives the **whole call**, including the
+TTS bot, while `customer_segments` is computed on the line above and not used.
+On call_003 roughly 57% of the SER input is the bot. Correcting that alone does
+**not** fix the inverted valence (section 7.2, arm A) - but it is still wrong,
+and it is part of the same fix.
+
 ---
 
 ## 4. ASR replacement: Parakeet
@@ -406,6 +437,18 @@ cannot, because at n=3 they have no resolution.
 The fixture stores the 9 fields and `review_flagged`, not `confidence`, so
 Phase 1.2's expected confidence change does not produce spurious failures.
 
+**1.6 Stabilise the SER input (section 3.8).**
+Feed `predict_dimensions` the customer's speech, spliced with the existing
+`vad.concatenate`, rather than the whole call including the bot. Replace
+fixed-offset sampling with deterministic coverage of that spliced signal, so the
+result is a function of the customer's audio and not of where the window
+boundaries happen to land.
+
+This is a Phase 1 item rather than Phase 3 because it is measurable without new
+data - the test is that the same call yields the same SER values under different
+segmentations, which is a property, not an accuracy claim. It does not attempt
+to fix the inverted valence; section 7.2 shows that is not a windowing problem.
+
 ### Phase 2 — latency
 
 Gated on 1.5 existing. Target: **180s → ~62s per file, 150 → ~51 min per 50-file
@@ -467,7 +510,9 @@ running it against n=3 would produce a result indistinguishable from noise.
 
 ---
 
-## 7. Explicitly excluded
+## 7. Alternatives considered
+
+### 7.1 Excluded from scope
 
 | excluded | reason |
 |---|---|
@@ -478,6 +523,82 @@ running it against n=3 would produce a result indistinguishable from noise.
 | Batch API adoption | Recorded as an option in §5; changes the latency contract. |
 | Removing SQUIM entirely | Gating preserves the impaired path for when a genuinely impaired example arrives. Deleting it would make the field permanently unfalsifiable. |
 | Parallelising across files | 2 cores. Measured 1-core penalty is 2.30×, so two 1-thread workers is net worse than one 2-thread worker. |
+
+### 7.2 Evaluated and rejected: alternative tone models
+
+Recorded so this is not re-run. All measured on the deployment hardware against
+the three labelled calls; truth is `upset` / `neutral` / `satisfied`, requiring
+valence ordering call_001 < call_002 < call_003.
+
+| candidate | result | verdict |
+|---|---|---|
+| audeering dimensional (deployed) | valence inverted on whole-call **and** customer-only | consistent, consistently wrong |
+| `superb/hubert-large-superb-er` | call_001 (upset) -> `hap=0.57`; call_003 (satisfied) -> `ang=0.45` | anti-correlated |
+| `ehcalabres/wav2vec2-lg-xlsr-en-...` | all 8 classes ~0.13 (uniform = 1/8); load emitted `Some weights were not initialized` | **invalid, not evidence** |
+| `emotion2vec+ large` | 2/3 top-1 whole-call, incl. call_003 -> `happy 0.46` | **artifact - see below** |
+
+**Why the `emotion2vec+` result was rejected despite looking like a win.** It was
+the only candidate to get call_003 right - the call no LLM tier, no prompt arm
+and no other SER model has ever got right. But the same model on three different
+selections of that one call returns three different labels:
+
+| call_003 (truth `satisfied`) | top-1 |
+|---|---|
+| whole call | `happy 0.46` |
+| customer speech only | `neutral 0.58` |
+| bot + silence only | `neutral 0.64` |
+
+The result is not reproduced when the customer's own speech is isolated, and does
+not come from the bot either - it is a function of which four 6s windows were
+sampled (section 3.8). It cannot be attributed to the caller's emotion.
+
+**Hard constraints found while testing:**
+
+- `emotion2vec+ large` on whole-call input **OOM-killed at 10.65 GB RSS** on the
+  10.9 GB box - full self-attention over the raw waveform, the same O(n^2) shape
+  documented for SQUIM in `quality.py`. Windowed, it peaks at 5.27 GB. Any
+  integration must window, which is precisely what makes it unstable here.
+- It requires `funasr` (the checkpoint ships as `model.pt`, no ONNX), which
+  resolves ~23 further packages including `modelscope` and Alibaba SDKs, and
+  fetches weights from a non-HuggingFace hub.
+
+**The meta-finding, which is why none of these could be adopted:** a strict
+3-point ordering test passes 1-in-6 by chance, and the same model demonstrably
+returns three different labels for one call. **At n=3 a good tone model cannot be
+distinguished from a bad one** - a candidate scoring 3/3 would be no more
+trustworthy than these. This is direct evidence for the Phase 3 gate rather than
+an argument for it.
+
+`emotion2vec+ large` remains the first candidate to re-test in Phase 3, on
+stabilised windowing (1.6) and with enough labelled data to separate signal from
+luck.
+
+### 7.3 Evaluated and rejected: AssemblyAI
+
+Rejected on three independent grounds, any one of which is disqualifying.
+
+1. **It does not address the problem.** Their Sentiment Analysis operates on the
+   transcript text ("detects the sentiment of each spoken sentence in the
+   transcript text") and emits `POSITIVE`/`NEUTRAL`/`NEGATIVE` with no intensity.
+   Section 3.3 established the discriminating signal is not in the text.
+   `NEGATIVE` also cannot separate `frustrated`/`upset`/`distressed`, which is
+   exactly where our errors are, so the tone LLM would still be required -
+   additive, not a replacement.
+2. **Cost.** Universal-2 async is $0.15/hr = **$0.00250 per audio-minute, 83% of
+   the entire $0.003 ceiling on its own**; Universal-3.5 Pro is $0.00350, over
+   the ceiling before any compute. AssemblyAI produces none of the six
+   deterministic signal fields, so ~31.5 s/audio-min of local compute still runs.
+   Full configurations land **40-129% over the ceiling**, against $0.00101
+   (66% headroom) for the post-Phase-2 local design.
+3. **It inverts the privacy boundary.** The current architecture never lets raw
+   audio leave the host - only text-derived measurements go to OpenAI
+   (`tone_llm.py`). AssemblyAI requires uploading the audio. Their zero-retention
+   offering covers Streaming only; async artifacts have a 1-hour minimum TTL.
+   Brief section 5 makes this an approval decision, not an engineering one.
+
+This generalises: **every cloud audio model carries objection 3**, so the
+audio-native path in Phase 3 is constrained to locally-hosted models unless that
+approval is obtained.
 
 ---
 
@@ -496,7 +617,10 @@ running it against n=3 would produce a result indistinguishable from noise.
   assert no audio remains under the workdir *or* the recorded upload-cache path.
   The validation-failure case is the one that currently leaks and has no test.
 - **Cost-observability test**: assert `cached_tokens` and `system_fingerprint`
-  are persisted, so §5's open question cannot silently reopen.
+  are persisted, so section 5's open question cannot silently reopen.
+- **SER stability test** (1.6): assert `predict_dimensions` returns the same
+  values for a call under two different but equivalent segmentations. This is a
+  property test, not an accuracy test, and it currently fails (section 3.8).
 - CI-safety is preserved: `jobs.py` must stay import-clean of `pipeline`,
   `schema`, `torch` and `gradio`. `asr_parakeet.py` imports `onnx_asr` lazily.
 
@@ -525,9 +649,11 @@ running it against n=3 would produce a result indistinguishable from noise.
 1. **1.5** golden-output fixture — first, because everything after it needs the gate
 2. **1.1** audio leaks — highest severity, independent of everything else
 3. **1.2** Tier C intensity, **1.3** model pinning + observability, **1.4** interruptions
-4. **2.4** VAD dedupe, **2.5** ECAPA batching — lowest-risk latency work, validates the gate
-5. **2.3** SQUIM gating
-6. **2.2** boundary duplication fix — before the ASR swap, so the two changes are separable
-7. **2.1** Parakeet router — the highest-value and highest-risk change, last in Phase 2
-8. **2.6** re-measure, re-cost, decide `gpt-4.1-mini`
-9. **Phase 3** — only once 30–50 labelled calls exist
+4. **1.6** stabilise the SER input - before Phase 2, so the golden fixture is
+   blessed against a SER value that is reproducible
+5. **2.4** VAD dedupe, **2.5** ECAPA batching — lowest-risk latency work, validates the gate
+6. **2.3** SQUIM gating
+7. **2.2** boundary duplication fix — before the ASR swap, so the two changes are separable
+8. **2.1** Parakeet router — the highest-value and highest-risk change, last in Phase 2
+9. **2.6** re-measure, re-cost, decide `gpt-4.1-mini`
+10. **Phase 3** — only once 30–50 labelled calls exist
