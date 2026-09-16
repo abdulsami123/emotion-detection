@@ -1,4 +1,4 @@
-# AutoAce — Voice Tone & Background Noise
+# Voice Tone & Background Noise
 
 Classifies emotional tone and background noise in call-centre audio into a fixed 9-field schema,
 under a $0.003-per-audio-minute inference ceiling.
