@@ -1,4 +1,4 @@
-# AutoAce Hosted Dashboard — Design
+# Emotion Detection Hosted Dashboard — Design
 
 Supersedes §13 of `2026-08-15-voice-tone-noise-design.md`, which specified a synchronous
 Gradio dashboard and left deployment as "a VM under our control (Fly.io / Render with private
@@ -14,7 +14,7 @@ single source of thresholds — is unchanged. This document covers only the host
 
 Brief §7 asks for a hosted dashboard with authenticated login that accepts a batch upload,
 validates it, processes it with visible progress, isolates per-file failures, exposes a review
-queue, and exports results. §13 already enumerates those behaviours and `autoace/app.py`
+queue, and exports results. §13 already enumerates those behaviours and `emotion_detection/app.py`
 already implements them **synchronously**. The gap is operational:
 
 - A 50-file batch takes ~2.7 hours on the deployment hardware (§2; was projected at ~87 minutes
@@ -132,15 +132,15 @@ See §8.
 
 ```
                     +------------------------------+
-   browser -------->| autoace-web.service          |
+   browser -------->| emotion_detection-web.service          |
    (Gradio auth)    |   Gradio Blocks              |
                     |   upload -> validate -> queue|
                     |   gr.Timer -> poll           |
                     +--------------+---------------+
                                    |  SQLite (WAL)
-                                   |  /opt/autoace/data/jobs.db
+                                   |  /opt/emotion_detection/data/jobs.db
                     +--------------+---------------+
-                    | autoace-worker.service       |
+                    | emotion_detection-worker.service       |
                     |   claim -> analyse_file ->   |
                     |   record -> unlink audio     |
                     +------------------------------+
@@ -148,10 +148,10 @@ See §8.
 
 | Module | Responsibility |
 |---|---|
-| `autoace/jobs.py` | **New.** SQLite job store: schema, enqueue, claim, complete, fail, status, reconcile, expire. No audio processing, no HTTP, no Gradio import. |
-| `autoace/worker.py` | **New.** The drain loop. Claims one file, calls `analyse_file`, records the result, unlinks the audio. |
-| `autoace/app.py` | **Refactored.** `run_batch` splits into enqueue + poll. |
-| `autoace/pipeline.py` | **Unchanged.** `analyse_file` is already the correct unit of work and already never raises. |
+| `emotion_detection/jobs.py` | **New.** SQLite job store: schema, enqueue, claim, complete, fail, status, reconcile, expire. No audio processing, no HTTP, no Gradio import. |
+| `emotion_detection/worker.py` | **New.** The drain loop. Claims one file, calls `analyse_file`, records the result, unlinks the audio. |
+| `emotion_detection/app.py` | **Refactored.** `run_batch` splits into enqueue + poll. |
+| `emotion_detection/pipeline.py` | **Unchanged.** `analyse_file` is already the correct unit of work and already never raises. |
 
 ### 3.1 Two systemd units, not a forked child
 
@@ -325,7 +325,7 @@ hung. Surfacing this is deliberate — a silent wait is the failure mode.
 
 ### 6.5 Auth
 
-`gr.Blocks(auth=(AUTOACE_USER, AUTOACE_PASSWORD))`, refusing to start without a password (already
+`gr.Blocks(auth=(EMOTION_DETECTION_USER, EMOTION_DETECTION_PASSWORD))`, refusing to start without a password (already
 implemented). The tunnel hostname is public; the app behind it is not.
 
 ---
@@ -408,7 +408,7 @@ persists across restarts and code deploys.
 
 No domain is purchased. Caddy runs on the VM, terminates TLS, and reverse-proxies to Gradio on
 `127.0.0.1:7860`, obtaining a real Let's Encrypt certificate for a free
-`autoace-<suffix>.duckdns.org` hostname pointed at the instance's public IP.
+`emotion_detection-<suffix>.duckdns.org` hostname pointed at the instance's public IP.
 
 **DuckDNS specifically, not `nip.io` or `sslip.io`.** All three are free wildcard-DNS services
 that avoid buying a domain, but Let's Encrypt scopes its "certificates per registered domain"
@@ -440,18 +440,18 @@ production:** SELinux is Enforcing on the deployment host and did not interfere 
 ### 8.4 Layout and units
 
 ```
-/opt/autoace/
+/opt/emotion_detection/
   repo/                    git clone
   venv/
   hf/                      HF_HOME — weights, downloaded once
   data/jobs.db             SQLite (WAL)
   data/uploads/<job_id>/   staged audio, unlinked per file
-/etc/autoace.env           mode 0600, root-owned
+/etc/emotion_detection.env           mode 0600, root-owned
 ```
 
 ```
-autoace-web.service        Restart=always  EnvironmentFile=/etc/autoace.env
-autoace-worker.service     Restart=always  EnvironmentFile=/etc/autoace.env
+emotion_detection-web.service        Restart=always  EnvironmentFile=/etc/emotion_detection.env
+emotion_detection-worker.service     Restart=always  EnvironmentFile=/etc/emotion_detection.env
 caddy.service              distro package; /etc/caddy/Caddyfile
 duckdns.timer              refreshes the A record if the public IP changes
 ```
@@ -467,7 +467,7 @@ but slow beats an OOM kill, and §7.4 covers the case where it is not enough.
 
 ### 8.5 Secrets
 
-`OPENAI_API_KEY`, `AUTOACE_USER`, `AUTOACE_PASSWORD` in `/etc/autoace.env` (0600), referenced by
+`OPENAI_API_KEY`, `EMOTION_DETECTION_USER`, `EMOTION_DETECTION_PASSWORD` in `/etc/emotion_detection.env` (0600), referenced by
 both units via `EnvironmentFile`. Never in the repo, never in a unit file, never baked into an
 image.
 
@@ -494,7 +494,7 @@ Appended to `config.py`, following its existing MEASURED / DERIVED / UNFITTED co
 
 ```python
 # --- hosted dashboard -------------------------------------------------------
-DATA_DIR = Path(os.environ.get("AUTOACE_DATA_DIR", "/opt/autoace/data"))
+DATA_DIR = Path(os.environ.get("EMOTION_DETECTION_DATA_DIR", "/opt/emotion_detection/data"))
 JOBS_DB = DATA_DIR / "jobs.db"
 UPLOAD_DIR = DATA_DIR / "uploads"
 
@@ -563,13 +563,13 @@ it to look like thin coverage.
 
 ## 12. Build order
 
-1. `autoace/jobs.py` + its 9 unit tests (no audio, no weights — fast and CI-safe).
-2. `autoace/worker.py` + `reconcile()` on startup + the expiry sweep.
+1. `emotion_detection/jobs.py` + its 9 unit tests (no audio, no weights — fast and CI-safe).
+2. `emotion_detection/worker.py` + `reconcile()` on startup + the expiry sweep.
 3. Refactor `app.py`: `enqueue_batch`, `poll_job`, `gr.Timer`, job-ID lookup. Existing 8 tests
    must stay green.
 4. Worker integration test over one real call.
 5. Deploy artifacts: `deploy/setup.sh`, both systemd units, `Caddyfile`, DuckDNS refresh timer,
    README section.
 6. Provision the VM, run the suite there, **re-measure peak RSS on ARM** (§11.2), warm the cache.
-7. Rotate the OpenAI key, set `/etc/autoace.env`, measure the happy-path peak (§11.3).
+7. Rotate the OpenAI key, set `/etc/emotion_detection.env`, measure the happy-path peak (§11.3).
 8. Update `docs/MEMO.md`: hosting, privacy, the CI limitation, and the measured numbers.

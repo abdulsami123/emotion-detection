@@ -15,7 +15,7 @@ from functools import lru_cache
 import numpy as np
 import torch
 
-from autoace.config import (
+from emotion_detection.config import (
     WHISPER_COMPUTE_CPU,
     WHISPER_COMPUTE_GPU,
     WHISPER_MODEL,

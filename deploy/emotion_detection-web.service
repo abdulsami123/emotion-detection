@@ -1,0 +1,28 @@
+[Unit]
+Description=Emotion Detection dashboard (web)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# User is rewritten by deploy/setup.sh to the derived app user (default:
+# SUDO_USER, else the current user, overridable via EMOTION_DETECTION_APP_USER).
+# ubuntu is only the in-repo default for a fresh checkout.
+User=ubuntu
+WorkingDirectory=/opt/emotion_detection/repo
+EnvironmentFile=/etc/emotion_detection.env
+Environment=EMOTION_DETECTION_DATA_DIR=/opt/emotion_detection/data
+Environment=HF_HOME=/opt/emotion_detection/hf
+# speechbrain resolves savedir against the CWD, so ECAPA needs an explicit
+# absolute cache dir or each process re-downloads it.
+Environment=EMOTION_DETECTION_MODELS_DIR=/opt/emotion_detection/models
+Environment=EMOTION_DETECTION_BIND=127.0.0.1
+Environment=PORT=7860
+ExecStart=/opt/emotion_detection/venv/bin/python -m emotion_detection.app
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

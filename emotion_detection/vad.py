@@ -10,7 +10,7 @@ from functools import lru_cache
 import numpy as np
 import torch
 
-from autoace.config import (
+from emotion_detection.config import (
     SAMPLE_RATE,
     VAD_MIN_SILENCE_MS,
     VAD_MIN_SPEECH_MS,

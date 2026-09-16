@@ -5,8 +5,8 @@ re-derived from scratch."""
 
 import pytest
 
-from autoace.acoustics import baseline_characterisation
-from autoace.config import reference_call
+from emotion_detection.acoustics import baseline_characterisation
+from emotion_detection.config import reference_call
 
 # (file, snr_db, floor_dbfs, max_gap_s, clip_pct, hf_fraction)
 EXPECTED = [
@@ -29,7 +29,7 @@ def test_baseline_matches_published_characterisation(name, snr, floor, gap, clip
 def test_long_silence_threshold_exceeds_measured_gap():
     """call_003 has a 7.35s gap and is labelled long_silence_present=false,
     so the threshold must sit above it."""
-    from autoace.config import LONG_SILENCE_SEC
+    from emotion_detection.config import LONG_SILENCE_SEC
     worst = max(
         baseline_characterisation(reference_call(n))["max_nonspeech_gap_s"]
         for n, *_ in EXPECTED
@@ -40,7 +40,7 @@ def test_long_silence_threshold_exceeds_measured_gap():
 def test_noise_floor_threshold_separates_the_labels():
     """The one no-noise call must fall below NOISE_FLOOR_PRESENT and both
     noisy calls above it."""
-    from autoace.config import NOISE_FLOOR_PRESENT
+    from emotion_detection.config import NOISE_FLOOR_PRESENT
     assert baseline_characterisation(reference_call("call_001.ogg"))["floor_dbfs"] < NOISE_FLOOR_PRESENT
     assert baseline_characterisation(reference_call("call_002.ogg"))["floor_dbfs"] > NOISE_FLOOR_PRESENT
     assert baseline_characterisation(reference_call("call_003.ogg"))["floor_dbfs"] > NOISE_FLOOR_PRESENT

@@ -1,7 +1,7 @@
 import pytest
 
-from autoace.asr import transcribe
-from autoace.config import reference_call
+from emotion_detection.asr import transcribe
+from emotion_detection.config import reference_call
 
 
 @pytest.fixture(scope="module")
@@ -61,8 +61,8 @@ def test_detect_language_works_on_an_audio_slice():
     call_002 opens with the bot greeting in English and later continues in
     Spanish. If both slices report the same language, the planned fix is not
     viable and the design needs revisiting."""
-    from autoace.asr import detect_language
-    from autoace.io_audio import load_mono
+    from emotion_detection.asr import detect_language
+    from emotion_detection.io_audio import load_mono
 
     y, sr = load_mono(reference_call("call_002.ogg"))
     opening, _ = detect_language(y[: 8 * sr])

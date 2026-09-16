@@ -21,7 +21,7 @@ from itertools import combinations
 import numpy as np
 import torch
 
-from autoace.config import (
+from emotion_detection.config import (
     LONG_SILENCE_SEC,
     NOISE_FLOOR_PRESENT,
     NOISE_SEVERITY_BANDS,
@@ -32,12 +32,12 @@ from autoace.config import (
     OVERLAP_SUBWINDOW_S,
     SAMPLE_RATE,
 )
-from autoace.acoustics import frame_db, stft_magnitude
-from autoace.diarize import _load_encoder
-from autoace.quality import assess_quality, noise_floor_dbfs, speech_level_dbfs
-from autoace.schema import AudioQuality, NoiseSeverity
-from autoace.tagging import classify_noise_type
-from autoace.vad import Segment, non_speech_segments, speech_segments
+from emotion_detection.acoustics import frame_db, stft_magnitude
+from emotion_detection.diarize import _load_encoder
+from emotion_detection.quality import assess_quality, noise_floor_dbfs, speech_level_dbfs
+from emotion_detection.schema import AudioQuality, NoiseSeverity
+from emotion_detection.tagging import classify_noise_type
+from emotion_detection.vad import Segment, non_speech_segments, speech_segments
 
 _FRAME_HOP_S = 0.01  # matches acoustics.stft_magnitude's 10 ms hop
 

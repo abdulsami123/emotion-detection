@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Idempotent provisioning for the AutoAce host.
+# Idempotent provisioning for the Emotion Detection host.
 #
 # Supports two distros, detected at runtime:
 #   - Ubuntu 24.04 aarch64 (apt), the original target.
@@ -9,22 +9,22 @@
 #
 # Safe to re-run: every step checks existing state before acting. Run this
 # script as a user with passwordless (or interactive) sudo, e.g.:
-#   /opt/autoace/repo/deploy/setup.sh
+#   /opt/emotion_detection/repo/deploy/setup.sh
 set -euo pipefail
 
 REPO_URL="https://github.com/abdulsami123/emotion-detection.git"
-REPO_DIR="/opt/autoace/repo"
-VENV_DIR="/opt/autoace/venv"
-DATA_DIR="/opt/autoace/data"
-HF_DIR="/opt/autoace/hf"
+REPO_DIR="/opt/emotion_detection/repo"
+VENV_DIR="/opt/emotion_detection/venv"
+DATA_DIR="/opt/emotion_detection/data"
+HF_DIR="/opt/emotion_detection/hf"
 # speechbrain resolves `savedir` against the CWD rather than HF_HOME, so ECAPA
 # needs its own explicit absolute cache dir or every process re-downloads it.
-MODELS_DIR=/opt/autoace/models
-ENV_FILE="/etc/autoace.env"
+MODELS_DIR=/opt/emotion_detection/models
+ENV_FILE="/etc/emotion_detection.env"
 
 # App user is never hardcoded to "ubuntu": default to the user who invoked
 # sudo, fall back to the current user, and let the operator override.
-APP_USER="${AUTOACE_APP_USER:-${SUDO_USER:-$(id -un)}}"
+APP_USER="${EMOTION_DETECTION_APP_USER:-${SUDO_USER:-$(id -un)}}"
 
 log() {
 	printf '==> %s\n' "$*"
@@ -189,9 +189,9 @@ else
 fi
 
 # ---------------------------------------------------------- data directories
-log "Creating /opt/autoace directories"
-sudo mkdir -p /opt/autoace
-sudo chown "$APP_USER:$APP_USER" /opt/autoace
+log "Creating /opt/emotion_detection directories"
+sudo mkdir -p /opt/emotion_detection
+sudo chown "$APP_USER:$APP_USER" /opt/emotion_detection
 sudo -u "$APP_USER" mkdir -p "$DATA_DIR" "$HF_DIR" "$MODELS_DIR"
 
 # ----------------------------------------------------------------------- repo
@@ -223,16 +223,16 @@ sudo -u "$APP_USER" "$VENV_DIR/bin/pip" install -r "$REPO_DIR/requirements.txt"
 log "Installing systemd units"
 # The in-repo units default to User=ubuntu; rewrite that line to the actual
 # app user derived above rather than hardcoding it (or requiring a template).
-sed "s/^User=.*/User=${APP_USER}/" "$REPO_DIR/deploy/autoace-web.service" \
-	| sudo tee /etc/systemd/system/autoace-web.service >/dev/null
-sed "s/^User=.*/User=${APP_USER}/" "$REPO_DIR/deploy/autoace-worker.service" \
-	| sudo tee /etc/systemd/system/autoace-worker.service >/dev/null
+sed "s/^User=.*/User=${APP_USER}/" "$REPO_DIR/deploy/emotion_detection-web.service" \
+	| sudo tee /etc/systemd/system/emotion_detection-web.service >/dev/null
+sed "s/^User=.*/User=${APP_USER}/" "$REPO_DIR/deploy/emotion_detection-worker.service" \
+	| sudo tee /etc/systemd/system/emotion_detection-worker.service >/dev/null
 sudo cp "$REPO_DIR/deploy/duckdns.service" /etc/systemd/system/duckdns.service
 sudo cp "$REPO_DIR/deploy/duckdns.timer" /etc/systemd/system/duckdns.timer
 sudo chmod +x "$REPO_DIR/deploy/duckdns.sh"
 
 # ------------------------------------------------------------------- secrets
-# /etc/autoace.env is created by the operator, never by this script and never
+# /etc/emotion_detection.env is created by the operator, never by this script and never
 # committed - it holds the OpenAI key and dashboard password.
 if [ ! -f "$ENV_FILE" ]; then
 	cat <<MSGEOF
@@ -242,9 +242,9 @@ none of these values are written by this script), then re-run setup.sh:
   sudo install -m 600 /dev/null $ENV_FILE
   sudo tee $ENV_FILE >/dev/null <<'ENVEOF'
 OPENAI_API_KEY=sk-replace-me
-AUTOACE_USER=admin
-AUTOACE_PASSWORD=replace-me
-AUTOACE_HOSTNAME=yoursubdomain.duckdns.org
+EMOTION_DETECTION_USER=admin
+EMOTION_DETECTION_PASSWORD=replace-me
+EMOTION_DETECTION_HOSTNAME=yoursubdomain.duckdns.org
 DUCKDNS_DOMAIN=yoursubdomain
 DUCKDNS_TOKEN=replace-me
 ENVEOF
@@ -257,22 +257,22 @@ set -a
 # shellcheck source=/dev/null
 source "$ENV_FILE"
 set +a
-: "${AUTOACE_HOSTNAME:?AUTOACE_HOSTNAME must be set in $ENV_FILE}"
+: "${EMOTION_DETECTION_HOSTNAME:?EMOTION_DETECTION_HOSTNAME must be set in $ENV_FILE}"
 
 # --------------------------------------------------------------------- caddy
 log "Installing Caddyfile"
 sudo mkdir -p /etc/caddy
 sudo cp "$REPO_DIR/deploy/Caddyfile" /etc/caddy/Caddyfile
 
-log "Passing AUTOACE_HOSTNAME to Caddy via a systemd drop-in"
+log "Passing EMOTION_DETECTION_HOSTNAME to Caddy via a systemd drop-in"
 sudo mkdir -p /etc/systemd/system/caddy.service.d
-# Only the hostname, NOT EnvironmentFile=/etc/autoace.env. Caddy needs one
+# Only the hostname, NOT EnvironmentFile=/etc/emotion_detection.env. Caddy needs one
 # variable; handing it the whole file would put OPENAI_API_KEY,
-# AUTOACE_PASSWORD and DUCKDNS_TOKEN into the environment of a process that
+# EMOTION_DETECTION_PASSWORD and DUCKDNS_TOKEN into the environment of a process that
 # has no use for any of them. The hostname itself is public.
 sudo tee /etc/systemd/system/caddy.service.d/override.conf >/dev/null <<DROPINEOF
 [Service]
-Environment=AUTOACE_HOSTNAME=${AUTOACE_HOSTNAME}
+Environment=EMOTION_DETECTION_HOSTNAME=${EMOTION_DETECTION_HOSTNAME}
 DROPINEOF
 
 # ---------------------------------------------------------------- model warm-up
@@ -281,29 +281,29 @@ DROPINEOF
 log "Warming model cache (~5 GiB total on first run; re-runs are fast no-ops)"
 (
 	cd "$REPO_DIR"
-	sudo -u "$APP_USER" env HF_HOME="$HF_DIR" AUTOACE_MODELS_DIR="$MODELS_DIR" "$VENV_DIR/bin/python" - <<'PY'
+	sudo -u "$APP_USER" env HF_HOME="$HF_DIR" EMOTION_DETECTION_MODELS_DIR="$MODELS_DIR" "$VENV_DIR/bin/python" - <<'PY'
 print("loading whisper (asr)...", flush=True)
-from autoace.asr import _load_model as _load_asr_model
+from emotion_detection.asr import _load_model as _load_asr_model
 _load_asr_model()
 
 print("loading ecapa encoder (diarize)...", flush=True)
-from autoace.diarize import _load_encoder
+from emotion_detection.diarize import _load_encoder
 _load_encoder()
 
 print("loading SER model...", flush=True)
-from autoace.ser import _load_model as _load_ser_model
+from emotion_detection.ser import _load_model as _load_ser_model
 _load_ser_model()
 
 print("loading AST tagging model...", flush=True)
-from autoace.tagging import _load_ast
+from emotion_detection.tagging import _load_ast
 _load_ast()
 
 print("loading NLI zero-shot classifier (bart-large-mnli fallback)...", flush=True)
-from autoace.tone_nli import _load_classifier
+from emotion_detection.tone_nli import _load_classifier
 _load_classifier()
 
 print("loading SQUIM quality model...", flush=True)
-from autoace.quality import _load_squim
+from emotion_detection.quality import _load_squim
 _load_squim()
 
 print("model warm-up complete", flush=True)
@@ -319,10 +319,10 @@ sudo systemctl start duckdns.service
 
 log "Enabling and starting services"
 sudo systemctl enable --now duckdns.timer
-sudo systemctl enable --now autoace-worker.service
-sudo systemctl enable --now autoace-web.service
+sudo systemctl enable --now emotion_detection-worker.service
+sudo systemctl enable --now emotion_detection-web.service
 sudo systemctl enable --now caddy.service
 
 log "Setup complete."
-echo "AutoAce should be reachable at: https://${AUTOACE_HOSTNAME}"
-echo "Tail worker logs with: journalctl -u autoace-worker -f"
+echo "Emotion Detection should be reachable at: https://${EMOTION_DETECTION_HOSTNAME}"
+echo "Tail worker logs with: journalctl -u emotion_detection-worker -f"

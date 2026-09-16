@@ -5,5 +5,5 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-EnvironmentFile=/etc/autoace.env
-ExecStart=/opt/autoace/repo/deploy/duckdns.sh
+EnvironmentFile=/etc/emotion_detection.env
+ExecStart=/opt/emotion_detection/repo/deploy/duckdns.sh

@@ -34,18 +34,18 @@ from pathlib import Path
 
 import numpy as np
 
-from autoace.asr import Word, transcribe
-from autoace.config import LLM_MODEL, REVIEW_THRESHOLD, SAMPLE_RATE
-from autoace.diarize import assign_speakers
-from autoace.fuse import (
+from emotion_detection.asr import Word, transcribe
+from emotion_detection.config import LLM_MODEL, REVIEW_THRESHOLD, SAMPLE_RATE
+from emotion_detection.diarize import assign_speakers
+from emotion_detection.fuse import (
     ConfidenceInputs,
     coherence_conflict,
     compute_confidence,
     intensity_from_activation,
     reconcile_intensity,
 )
-from autoace.io_audio import load_mono
-from autoace.prosody import (
+from emotion_detection.io_audio import load_mono
+from emotion_detection.prosody import (
     baseline_is_degenerate,
     Tier,
     activation_profile,
@@ -56,12 +56,12 @@ from autoace.prosody import (
     select_tier,
     z_score,
 )
-from autoace.schema import CallAnalysis, EmotionalIntensity, EmotionalTone
-from autoace.ser import Dimensions, predict_dimensions
-from autoace.signal_branch import analyse_signal
-from autoace.tone_llm import ToneRequest, classify_tone
-from autoace.tone_nli import classify_tone_nli
-from autoace.vad import Segment, speech_segments
+from emotion_detection.schema import CallAnalysis, EmotionalIntensity, EmotionalTone
+from emotion_detection.ser import Dimensions, predict_dimensions
+from emotion_detection.signal_branch import analyse_signal
+from emotion_detection.tone_llm import ToneRequest, classify_tone
+from emotion_detection.tone_nli import classify_tone_nli
+from emotion_detection.vad import Segment, speech_segments
 
 
 @dataclass

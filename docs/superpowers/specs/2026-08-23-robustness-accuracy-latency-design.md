@@ -103,7 +103,7 @@ irreproducible across days.
 ```
 2026-08-21 03:32  2.8 MB  /tmp/gradio/7418d8a2.../call_003.ogg
 2026-08-22 16:34  503 KB  /tmp/gradio/6388bb02.../call_001.ogg
-2026-08-21 03:00  2.8 MB  /tmp/autoace_batch_wjcudt5s/call_003.ogg   (failed job)
+2026-08-21 03:00  2.8 MB  /tmp/emotion_detection_batch_wjcudt5s/call_003.ogg   (failed job)
 ```
 
 Observed 2026-08-23, so up to two days old. `README.md` states "Audio is deleted
@@ -405,7 +405,7 @@ sweeps workdirs belonging to jobs in a terminal state with zero outstanding file
 had `files` rows. Filesystem work stays *after* the SQL commit, per the existing
 atomicity pattern (`rmtree` cannot be rolled back).
 
-`expire` additionally removes any `/tmp/gradio` and `autoace_batch_*` directory
+`expire` additionally removes any `/tmp/gradio` and `emotion_detection_batch_*` directory
 older than `JOB_TTL_SECONDS`, so pre-existing residue drains without manual
 intervention.
 
@@ -456,7 +456,7 @@ batch** (2.92×, PROJECTED from the measured stage model plus the measured
 Parakeet timings).
 
 **2.1 Parakeet for English, Whisper for everything else.**
-New `autoace/asr_parakeet.py` behind the existing `asr.transcribe` interface, so
+New `emotion_detection/asr_parakeet.py` behind the existing `asr.transcribe` interface, so
 `pipeline.py` is unchanged. Returns `Transcript` with `Word(start, end, text)`
 reconstructed from token timestamps on leading-space boundaries, and
 `avg_logprob` from `logprobs`. `asr.transcribe` becomes a router: run Parakeet,

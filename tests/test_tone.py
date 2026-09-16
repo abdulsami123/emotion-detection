@@ -1,8 +1,8 @@
 import pytest
 
-from autoace.schema import EmotionalTone
-from autoace.tone_llm import ToneRequest, build_prompt, parse_response
-from autoace.tone_nli import classify_tone_nli
+from emotion_detection.schema import EmotionalTone
+from emotion_detection.tone_llm import ToneRequest, build_prompt, parse_response
+from emotion_detection.tone_nli import classify_tone_nli
 
 
 def _request(**overrides):
@@ -77,7 +77,7 @@ def test_parse_response_accepts_a_valid_payload():
 def test_self_confidence_is_named_distinctly_from_the_schema_field():
     """The schema's `confidence` is computed from voter agreement, not from the
     model rating itself. Distinct naming prevents accidental passthrough."""
-    from autoace.tone_llm import ToneResponse
+    from emotion_detection.tone_llm import ToneResponse
     import dataclasses
 
     fields = {f.name for f in dataclasses.fields(ToneResponse)}

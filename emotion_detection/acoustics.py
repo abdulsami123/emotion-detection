@@ -6,7 +6,7 @@ from __future__ import annotations
 import librosa
 import numpy as np
 
-from autoace.config import SAMPLE_RATE
+from emotion_detection.config import SAMPLE_RATE
 
 _STFT_N_FFT = 512
 _STFT_HOP = 160          # 10 ms at 16 kHz

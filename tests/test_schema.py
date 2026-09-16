@@ -3,8 +3,8 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from autoace.config import LABELS_CSV
-from autoace.schema import CallAnalysis, EmotionalTone, EmotionalIntensity
+from emotion_detection.config import LABELS_CSV
+from emotion_detection.schema import CallAnalysis, EmotionalTone, EmotionalIntensity
 
 
 def test_valid_analysis_round_trips():

@@ -1,6 +1,6 @@
 """LLM tone classifier for the human caller in a voice-agent call.
 
-Runs against OpenAI `gpt-4o-mini` (see autoace.config.LLM_MODEL). Only
+Runs against OpenAI `gpt-4o-mini` (see emotion_detection.config.LLM_MODEL). Only
 `classify_tone` is vendor-specific: `build_prompt` and `parse_response` are
 provider-agnostic on purpose, so changing provider is a one-function edit and
 the prompt design - which is the hard-won part - travels unchanged. It was
@@ -32,7 +32,7 @@ encodes one direction gets the other call wrong.
 
 SER axes are measured as COMPRESSED on this telephony audio: valence spans
 only 0.534-0.638 and arousal only 0.594-0.646 across the three labelled
-calls (see autoace/config.py VALENCE_POS_MIN etc. for the same finding used
+calls (see emotion_detection/config.py VALENCE_POS_MIN etc. for the same finding used
 elsewhere in the pipeline). The prompt must not imply the model will see
 values near 0 or 1 - relative comparison matters more than absolute level.
 
@@ -51,8 +51,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from autoace.config import LLM_MAX_OUTPUT_TOKENS, LLM_MODEL, LLM_TEMPERATURE
-from autoace.schema import EmotionalIntensity, EmotionalTone
+from emotion_detection.config import LLM_MAX_OUTPUT_TOKENS, LLM_MODEL, LLM_TEMPERATURE
+from emotion_detection.schema import EmotionalIntensity, EmotionalTone
 
 # --------------------------------------------------------------- definitions
 # Verbatim from the brief. Tests assert on these exact substrings - the
@@ -231,7 +231,7 @@ class ToneResponse:
     """The seven fields the LLM produces.
 
     Named `self_confidence`, never `confidence`: the schema's `confidence`
-    field (autoace.schema.CallAnalysis.confidence) is computed downstream
+    field (emotion_detection.schema.CallAnalysis.confidence) is computed downstream
     from voter agreement across the LLM and NLI classifiers, not from the
     model's own self-rating. Sharing a name would invite an accidental
     passthrough of the model's opinion of itself in place of the ensemble's
@@ -322,7 +322,7 @@ def classify_tone(request: ToneRequest) -> ToneResponse:
 
     Privacy boundary: the customer-side transcript and derived acoustic
     features (SER triple, prosody tags, trajectory, agent-behaviour summary)
-    leave AutoAce infrastructure in this call. Raw audio never does - only
+    leave Emotion Detection infrastructure in this call. Raw audio never does - only
     text-derived measurements are sent.
     """
     from openai import OpenAI

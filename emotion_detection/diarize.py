@@ -19,14 +19,14 @@ import torch
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import silhouette_score
 
-from autoace.config import (
+from emotion_detection.config import (
     AGENT_REF_MIN_SIM,
     DIARIZATION_MIN_SILHOUETTE,
     ECAPA_MODEL,
     MODELS_DIR,
     SAMPLE_RATE,
 )
-from autoace.vad import Segment
+from emotion_detection.vad import Segment
 
 _MIN_EMBED_SAMPLES = int(0.4 * SAMPLE_RATE)  # ECAPA needs ~0.4s to be stable
 

@@ -4,15 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from autoace.app import (
+from emotion_detection.app import (
     SCHEMA_COLUMNS,
     BatchValidation,
     results_to_csv,
     results_to_json,
     validate_batch,
 )
-from autoace.pipeline import FileResult
-from autoace.schema import CallAnalysis
+from emotion_detection.pipeline import FileResult
+from emotion_detection.schema import CallAnalysis
 
 
 def _analysis(**overrides):
@@ -94,7 +94,7 @@ def test_json_export_round_trips_and_marks_errors():
 def test_review_flagged_rows_are_identifiable_in_the_table():
     """A degraded result must be visible, not buried - with the API key invalid
     every call currently takes the NLI fallback and flags for review."""
-    from autoace.app import results_to_table
+    from emotion_detection.app import results_to_table
 
     rows = results_to_table(
         [
@@ -109,7 +109,7 @@ def test_review_flagged_rows_are_identifiable_in_the_table():
 
 def test_app_builds_without_launching():
     """Import and construction must work headlessly; never call launch() here."""
-    from autoace.app import build_app
+    from emotion_detection.app import build_app
 
     assert build_app() is not None
 
@@ -119,11 +119,11 @@ def _reload_modules(monkeypatch, tmp_path):
     read at import time. Returns (app_module, jobs_module)."""
     import importlib
 
-    monkeypatch.setenv("AUTOACE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("EMOTION_DETECTION_DATA_DIR", str(tmp_path / "data"))
 
-    from autoace import app as app_module
-    from autoace import config as config_module
-    from autoace import jobs as jobs_module
+    from emotion_detection import app as app_module
+    from emotion_detection import config as config_module
+    from emotion_detection import jobs as jobs_module
 
     importlib.reload(config_module)
     importlib.reload(jobs_module)
@@ -258,7 +258,7 @@ def test_enqueue_batch_without_a_manifest_offers_no_scoring(tmp_path, monkeypatc
     """No manifest means no ground truth, so nothing to score against."""
     app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
 
-    from autoace.pipeline import FileResult
+    from emotion_detection.pipeline import FileResult
 
     batch = tmp_path / "batch"
     batch.mkdir()
@@ -326,7 +326,7 @@ def test_poll_job_projects_rows_into_the_existing_table_shape(tmp_path, monkeypa
     keeps sorting flagged rows to the top."""
     app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
 
-    from autoace.pipeline import FileResult
+    from emotion_detection.pipeline import FileResult
 
     batch = tmp_path / "batch"
     batch.mkdir()
@@ -426,7 +426,7 @@ def test_scoring_view_renders_after_the_workdir_is_gone(tmp_path, monkeypatch):
 
     app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
 
-    from autoace.pipeline import FileResult
+    from emotion_detection.pipeline import FileResult
 
     expected_json = _analysis().model_dump_json()
     # Embed the JSON in a CSV cell: double the inner quotes, wrap in quotes.
@@ -463,7 +463,7 @@ def test_scoring_view_stays_empty_for_an_unlabelled_batch(tmp_path, monkeypatch)
     to score and nothing should be implied."""
     app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
 
-    from autoace.pipeline import FileResult
+    from emotion_detection.pipeline import FileResult
 
     batch = tmp_path / "batch"
     batch.mkdir()
@@ -489,7 +489,7 @@ def test_table_displays_every_schema_field():
     """Brief section 7 requires the displayed prediction to use the required
     output schema. Three boolean fields were exported but never shown:
     background_noise_present, speaker_overlap_present, long_silence_present."""
-    from autoace.app import SCHEMA_COLUMNS, TABLE_HEADERS, results_to_table
+    from emotion_detection.app import SCHEMA_COLUMNS, TABLE_HEADERS, results_to_table
 
     rows = results_to_table(
         [
@@ -525,7 +525,7 @@ def test_table_displays_every_schema_field():
 def test_table_shows_boolean_fields_as_readable_values():
     """A raw Python True/False in a Gradio dataframe reads poorly next to enum
     strings like slightly_impaired; yes/no keeps the row scannable."""
-    from autoace.app import results_to_table
+    from emotion_detection.app import results_to_table
 
     rows = results_to_table(
         [
@@ -546,7 +546,7 @@ def test_table_shows_boolean_fields_as_readable_values():
 def test_error_and_pending_rows_have_one_cell_per_header():
     """Gradio silently mangles a dataframe with ragged rows, and a pending file
     must not be mislabelled ERROR - it has not failed, it has not run."""
-    from autoace.app import TABLE_HEADERS, results_to_table
+    from emotion_detection.app import TABLE_HEADERS, results_to_table
 
     rows = results_to_table(
         [
@@ -570,7 +570,7 @@ def test_poll_job_rows_all_match_the_header_width(tmp_path, monkeypatch):
     results_to_table."""
     app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
 
-    from autoace.pipeline import FileResult as FR
+    from emotion_detection.pipeline import FileResult as FR
 
     batch = tmp_path / "batch"
     batch.mkdir()
@@ -612,7 +612,7 @@ def test_repeated_polling_does_not_leak_export_directories(tmp_path, monkeypatch
     in place, is the bound."""
     app_module, _ = _reload_modules(monkeypatch, tmp_path)
 
-    from autoace.config import EXPORTS_DIR
+    from emotion_detection.config import EXPORTS_DIR
 
     batch = tmp_path / "batch"
     batch.mkdir()
@@ -638,7 +638,7 @@ def test_expire_removes_the_export_directory(tmp_path, monkeypatch):
 
     app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
 
-    from autoace.config import EXPORTS_DIR, JOB_TTL_SECONDS
+    from emotion_detection.config import EXPORTS_DIR, JOB_TTL_SECONDS
 
     batch = tmp_path / "batch"
     batch.mkdir()

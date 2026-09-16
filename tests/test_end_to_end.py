@@ -18,9 +18,9 @@ the evidence actually supports:
 
 import pytest
 
-from autoace.config import LABELS_CSV, REVIEW_THRESHOLD, reference_call
-from autoace.eval import load_manifest, score_batch
-from autoace.pipeline import analyse_file
+from emotion_detection.config import LABELS_CSV, REVIEW_THRESHOLD, reference_call
+from emotion_detection.eval import load_manifest, score_batch
+from emotion_detection.pipeline import analyse_file
 
 
 @pytest.fixture(scope="module")

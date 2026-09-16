@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from autoace.config import (
+from emotion_detection.config import (
     EXPORTS_DIR,
     JOB_TTL_SECONDS,
     JOBS_BUSY_TIMEOUT_MS,
@@ -31,7 +31,7 @@ from autoace.config import (
     STALE_RUNNING_SECONDS,
 )
 
-log = logging.getLogger("autoace.jobs")
+log = logging.getLogger("emotion_detection.jobs")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -569,8 +569,8 @@ def job_results(conn: sqlite3.Connection, job_id: str) -> list["FileResult"]:
     the table as not-yet-processed rather than vanish, so a 50-file batch shows
     50 rows from the moment it is enqueued.
     """
-    from autoace.pipeline import FileResult
-    from autoace.schema import CallAnalysis
+    from emotion_detection.pipeline import FileResult
+    from emotion_detection.schema import CallAnalysis
 
     results = []
     for row in conn.execute(

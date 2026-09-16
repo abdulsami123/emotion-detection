@@ -1,8 +1,8 @@
-# AutoAce Voice Tone & Background Noise — Design
+# Emotion Detection Voice Tone & Background Noise — Design
 
 **Date:** 2026-08-15
 **Status:** Approved for implementation
-**Deliverable:** AutoAce AI technical trial — hosted dashboard + pipeline + memo
+**Deliverable:** Emotion Detection AI technical trial — hosted dashboard + pipeline + memo
 
 ---
 
@@ -365,7 +365,7 @@ must be rich.
 #### 5.2.1 System prompt
 
 ```
-You are an expert call-audio analyst for AutoAce. You score calls between an AI
+You are an expert call-audio analyst for Emotion Detection. You score calls between an AI
 voice agent and a human caller. Classify the HUMAN CALLER's emotion only —
 ignore the agent's tone entirely.
 
@@ -492,7 +492,7 @@ all fields `required`, enums as `enum` arrays). Returns `emotional_tone`,
 `emotional_intensity`, `lexical_intensity_markers`, `agent_failed`, and a
 `reasoning` string retained for the memo and for dashboard explainability.
 
-**Privacy:** transcripts and derived features leave AutoAce infrastructure; **audio does not.**
+**Privacy:** transcripts and derived features leave Emotion Detection infrastructure; **audio does not.**
 Zero-retention is set on the account. Disclosed per §11 of the brief with model name, pricing,
 retention policy, and egress boundary stated explicitly.
 
@@ -500,7 +500,7 @@ retention policy, and egress boundary stated explicitly.
 different approaches"):** a zero-shot NLI classifier (`facebook/bart-large-mnli`) scoring the
 transcript against the five class definitions as entailment hypotheses. Runs on CPU, needs no
 labels, costs nothing. Serves three purposes: satisfies the comparison requirement, acts as the
-no-API fallback if AutoAce rejects transcript egress, and votes in the confidence ensemble.
+no-API fallback if Emotion Detection rejects transcript egress, and votes in the confidence ensemble.
 
 ---
 
@@ -755,7 +755,7 @@ Backchannel "mm-hm" must not fire it.
 contains speech, so the detector will fire on background TV regardless of whether the labeller
 counted it. With three calls we cannot tell which. **Decision: do not suppress.** Let TV speech
 count, matching the observed label. Recorded in the memo as an unresolved ambiguity and a
-first-priority question for AutoAce.
+first-priority question for Emotion Detection.
 
 ### 7.6 `long_silence_present`
 
@@ -809,7 +809,7 @@ the calibration is weakest.
 rigor claim: thresholds are derived, not fitted, and must be auditable in one place.
 
 ```
-autoace/
+emotion_detection/
   config.py        # ALL thresholds, weights, model IDs
   schema.py        # pydantic models; enum enforcement
   io_audio.py      # decode, resample, stereo detection
@@ -1063,7 +1063,7 @@ Required behaviours from §7 of the brief:
   matrices, and the constant-`medium` intensity baseline. The evaluator can then score a
   labelled batch without touching the command line, which is the point of the deliverable.
 
-**Deployment:** a VM AutoAce-approved or under our control (Fly.io / Render with private
+**Deployment:** a VM Emotion Detection-approved or under our control (Fly.io / Render with private
 storage). **Not** a public model-hosting Space — uploaded production audio is confidential per
 §5 of the brief, and the deployment must stay available through the evaluation period.
 
@@ -1151,7 +1151,7 @@ Stated in the memo, not discovered by the grader:
    upgrade the cost ceiling permits.
 4. **Evaluate an audio-LLM tiebreak** on the subset where the two intensity voters disagree
    (§6.5) — a bounded fraction of calls, so bounded cost and bounded audio egress. Requires
-   AutoAce to approve audio leaving their infrastructure; the local-only design stands if they
+   Emotion Detection to approve audio leaving their infrastructure; the local-only design stands if they
    do not.
 
 ---

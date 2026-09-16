@@ -37,7 +37,7 @@ from transformers.models.wav2vec2.modeling_wav2vec2 import (
     Wav2Vec2PreTrainedModel,
 )
 
-from autoace.config import SAMPLE_RATE, SER_MAX_WINDOWS, SER_MODEL, SER_WINDOW_S
+from emotion_detection.config import SAMPLE_RATE, SER_MAX_WINDOWS, SER_MODEL, SER_WINDOW_S
 
 
 @dataclass(frozen=True)

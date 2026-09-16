@@ -8,9 +8,9 @@ which also keeps these runnable in CI where the audio fixtures are absent.
 
 import pytest
 
-from autoace import jobs, worker
-from autoace.config import MAX_ATTEMPTS, reference_call
-from autoace.pipeline import FileResult
+from emotion_detection import jobs, worker
+from emotion_detection.config import MAX_ATTEMPTS, reference_call
+from emotion_detection.pipeline import FileResult
 
 
 @pytest.fixture

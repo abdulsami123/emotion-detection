@@ -15,13 +15,13 @@ from functools import lru_cache
 
 import numpy as np
 
-from autoace.config import (
+from emotion_detection.config import (
     ACTIVATION_WEIGHTS,
     BASELINE_MAX_COVERAGE,
     BASELINE_WINDOW_S,
     SAMPLE_RATE,
 )
-from autoace.vad import Segment
+from emotion_detection.vad import Segment
 
 
 class Tier(str, Enum):
@@ -53,7 +53,7 @@ _MIN_SLICE_S = 0.1
 
 def select_tier(customer_speech_seconds: float) -> Tier:
     """Total customer speech selects the method - see the tiering table."""
-    from autoace.config import TIER_A_MIN_SPEECH_S, TIER_C_MAX_SPEECH_S
+    from emotion_detection.config import TIER_A_MIN_SPEECH_S, TIER_C_MAX_SPEECH_S
 
     if customer_speech_seconds > TIER_A_MIN_SPEECH_S:
         return Tier.A

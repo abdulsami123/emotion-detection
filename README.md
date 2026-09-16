@@ -1,4 +1,4 @@
-# Voice Tone & Background Noise
+# Emotion Detection — Voice Tone & Background Noise
 
 Classifies emotional tone and background noise in call-centre audio into a fixed 9-field schema,
 under a $0.003-per-audio-minute inference ceiling.
@@ -23,7 +23,7 @@ reference/call_003.ogg
 reference/labels.csv
 ```
 
-Everything resolves through `autoace.config.reference_call()`, so nothing assumes the audio sits in
+Everything resolves through `emotion_detection.config.reference_call()`, so nothing assumes the audio sits in
 the working directory. `labels.csv` uses the brief's manifest format: a `name` column holding the
 bare filename, and a `result_json` column holding the expected JSON object.
 
@@ -51,8 +51,8 @@ SER, bart-large-mnli, ECAPA, SQUIM, Silero VAD).
 
 ```bash
 python -c "
-from autoace.pipeline import analyse_file
-from autoace.config import reference_call
+from emotion_detection.pipeline import analyse_file
+from emotion_detection.config import reference_call
 r = analyse_file(reference_call('call_001.ogg'))
 print(r.analysis.model_dump_json(indent=2))
 print('review flagged:', r.review_flagged)
@@ -65,9 +65,9 @@ print('tone path:', r.reasoning)
 ```bash
 python -c "
 import json
-from autoace.eval import load_manifest, score_batch
-from autoace.pipeline import analyse_file
-from autoace.config import LABELS_CSV, reference_call
+from emotion_detection.eval import load_manifest, score_batch
+from emotion_detection.pipeline import analyse_file
+from emotion_detection.config import LABELS_CSV, reference_call
 rows = load_manifest(str(LABELS_CSV))
 preds = {r.name: analyse_file(reference_call(r.name)).analysis for r in rows}
 print(json.dumps(score_batch(rows, preds), indent=2, default=str))
@@ -81,12 +81,12 @@ hours on the deployment hardware (was projected at ~87 minutes on the x86
 dev machine — see `docs/MEMO.md` §9.2) and no HTTP request survives that:
 
 ```bash
-export AUTOACE_DATA_DIR=./_data
-python -m autoace.worker &                       # claims files, runs the pipeline
-AUTOACE_USER=autoace AUTOACE_PASSWORD=<password> python -m autoace.app
+export EMOTION_DETECTION_DATA_DIR=./_data
+python -m emotion_detection.worker &                       # claims files, runs the pipeline
+EMOTION_DETECTION_USER=emotion_detection EMOTION_DETECTION_PASSWORD=<password> python -m emotion_detection.app
 ```
 
-The web process binds `127.0.0.1:7860` (`AUTOACE_BIND=0.0.0.0` to change it) and
+The web process binds `127.0.0.1:7860` (`EMOTION_DETECTION_BIND=0.0.0.0` to change it) and
 refuses to start without a password. Upload a ZIP containing audio plus one CSV
 manifest; the batch is validated before any inference runs, one bad file cannot
 fail the batch, and results download as CSV and JSON with original filenames
@@ -206,7 +206,7 @@ measurements that diagnose them, and will flip to XPASS the moment either is gen
 ## Layout
 
 ```
-autoace/
+emotion_detection/
   config.py         EVERY threshold, annotated MEASURED / DERIVED / UNFITTED
   schema.py         the 9-field output contract
   io_audio.py       decode; never normalizes loudness (absolute level is load-bearing)

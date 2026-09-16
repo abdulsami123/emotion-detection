@@ -1,14 +1,14 @@
 """Local zero-shot NLI tone classifier.
 
 This is the second, materially different approach the brief requires
-alongside the Haiku LLM classifier (autoace.tone_llm). Two roles:
+alongside the Haiku LLM classifier (emotion_detection.tone_llm). Two roles:
 
   1. Satisfies the "compare two materially different approaches" requirement
      - this is a local zero-shot entailment model (facebook/bart-large-mnli),
      not an LLM completion, so its errors are decorrelated from the LLM's
      rather than being a second sample from the same failure modes.
   2. Doubles as the no-API-key fallback and a vote in the confidence
-     ensemble (see autoace.config CONF_TONE_AGREE) - if the LLM and this
+     ensemble (see emotion_detection.config CONF_TONE_AGREE) - if the LLM and this
      classifier agree on the label, that raises the ensemble's confidence.
 
 Text-only, unlike the LLM classifier: this module never sees prosody or
@@ -22,13 +22,13 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from autoace.config import NLI_MODEL
-from autoace.schema import EmotionalTone
+from emotion_detection.config import NLI_MODEL
+from emotion_detection.schema import EmotionalTone
 
 _HYPOTHESIS_TEMPLATE = "This caller sounds {}."
 
 # Hypothesis phrasing per tone - kept close to the schema's own definitions
-# (autoace.tone_llm.LABEL_DEFINITIONS) so the two classifiers are judging the
+# (emotion_detection.tone_llm.LABEL_DEFINITIONS) so the two classifiers are judging the
 # same boundaries, just via different mechanisms.
 _LABEL_HYPOTHESES: dict[str, str] = {
     EmotionalTone.NEUTRAL.value: "neutral, with no clear positive or negative emotion",

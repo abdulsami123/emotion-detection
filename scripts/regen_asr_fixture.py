@@ -12,8 +12,8 @@ import json
 import time
 from pathlib import Path
 
-from autoace.asr import transcribe
-from autoace.config import reference_call
+from emotion_detection.asr import transcribe
+from emotion_detection.config import reference_call
 
 CALLS = ["call_001.ogg", "call_002.ogg", "call_003.ogg"]
 OUT = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "asr_baseline.json"

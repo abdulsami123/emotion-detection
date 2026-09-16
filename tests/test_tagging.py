@@ -1,17 +1,17 @@
 """Background-noise typing.
 
 Two of the original design claims were refuted by measurement; see the
-`autoace/tagging.py` module docstring. These tests pin what actually holds,
+`emotion_detection/tagging.py` module docstring. These tests pin what actually holds,
 and mark what does not with strict xfail so it cannot quietly pass unnoticed.
 """
 
 import numpy as np
 import pytest
 
-from autoace.config import reference_call
-from autoace.io_audio import load_mono
-from autoace.tagging import classify_noise_type, spectral_artifact, tag_audio
-from autoace.vad import non_speech_segments
+from emotion_detection.config import reference_call
+from emotion_detection.io_audio import load_mono
+from emotion_detection.tagging import classify_noise_type, spectral_artifact, tag_audio
+from emotion_detection.vad import non_speech_segments
 
 
 @pytest.fixture(scope="module")

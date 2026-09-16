@@ -1,9 +1,9 @@
 import pytest
 
-from autoace.config import reference_call
-from autoace.diarize import assign_speakers
-from autoace.io_audio import load_mono
-from autoace.vad import Segment, speech_segments
+from emotion_detection.config import reference_call
+from emotion_detection.diarize import assign_speakers
+from emotion_detection.io_audio import load_mono
+from emotion_detection.vad import Segment, speech_segments
 
 
 @pytest.fixture(scope="module")
@@ -60,8 +60,8 @@ def test_transcript_verification_corrects_the_inverted_call():
     """The actual invariant the pipeline now relies on: content-based
     verification recovers the correct roles on call_001, and leaves the two
     already-correct calls untouched."""
-    from autoace.asr import transcribe
-    from autoace.pipeline import _text_in_segment, verify_roles
+    from emotion_detection.asr import transcribe
+    from emotion_detection.pipeline import _text_in_segment, verify_roles
 
     y, _ = load_mono(reference_call("call_001.ogg"))
     segments = speech_segments(y)

@@ -7,7 +7,7 @@ case here is something an evaluator-supplied CSV plausibly does.
 
 import pytest
 
-from autoace.eval import load_manifest
+from emotion_detection.eval import load_manifest
 
 
 def test_manifest_with_a_utf8_bom_is_readable(tmp_path):
@@ -103,7 +103,7 @@ def test_manifest_reports_a_row_whose_json_violates_the_schema(tmp_path):
 def test_labelled_manifest_still_parses(tmp_path):
     """The happy path must not regress: a fully labelled row still yields a
     CallAnalysis."""
-    from autoace.schema import CallAnalysis
+    from emotion_detection.schema import CallAnalysis
 
     expected = CallAnalysis.model_validate(
         {

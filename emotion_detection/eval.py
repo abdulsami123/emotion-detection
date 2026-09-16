@@ -12,7 +12,7 @@ import csv
 import json
 from dataclasses import dataclass
 
-from autoace.schema import CallAnalysis
+from emotion_detection.schema import CallAnalysis
 
 # Fixed by the brief's batch format - the manifest and any batch output must
 # use exactly these two column names.

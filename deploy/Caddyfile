@@ -1,8 +1,8 @@
-{$AUTOACE_HOSTNAME} {
+{$EMOTION_DETECTION_HOSTNAME} {
 	encode gzip
 
 	# 50 files at the largest provided call (2.8 MB) is ~140 MB; 500 MB
-	# matches MAX_UPLOAD_MB in autoace/config.py.
+	# matches MAX_UPLOAD_MB in emotion_detection/config.py.
 	request_body {
 		max_size 500MB
 	}

@@ -17,18 +17,18 @@ import sys
 import time
 from typing import Callable
 
-from autoace import jobs
-from autoace.config import EXPIRY_SWEEP_SECONDS, MAX_ATTEMPTS, WORKER_POLL_SECONDS
+from emotion_detection import jobs
+from emotion_detection.config import EXPIRY_SWEEP_SECONDS, MAX_ATTEMPTS, WORKER_POLL_SECONDS
 
-log = logging.getLogger("autoace.worker")
+log = logging.getLogger("emotion_detection.worker")
 
 Analyser = Callable[[str], object]
 
 
 def _default_analyser(path: str):
-    """Imported lazily so `import autoace.worker` stays cheap - the tests that
+    """Imported lazily so `import emotion_detection.worker` stays cheap - the tests that
     inject a fake analyser must not pay for loading torch."""
-    from autoace.pipeline import analyse_file
+    from emotion_detection.pipeline import analyse_file
 
     return analyse_file(path)
 

@@ -1,11 +1,11 @@
 import numpy as np
 import pytest
 
-from autoace.config import NOISE_FLOOR_PRESENT, reference_call
-from autoace.io_audio import load_mono
-from autoace.quality import assess_quality, noise_floor_dbfs, speech_level_dbfs
-from autoace.schema import AudioQuality
-from autoace.vad import non_speech_segments, speech_segments
+from emotion_detection.config import NOISE_FLOOR_PRESENT, reference_call
+from emotion_detection.io_audio import load_mono
+from emotion_detection.quality import assess_quality, noise_floor_dbfs, speech_level_dbfs
+from emotion_detection.schema import AudioQuality
+from emotion_detection.vad import non_speech_segments, speech_segments
 
 CALLS = ("call_001.ogg", "call_002.ogg", "call_003.ogg")
 
@@ -94,7 +94,7 @@ def test_empty_region_returns_a_floor_sentinel(audio):
 # label the schema actually emits.
 # ---------------------------------------------------------------------------
 
-from autoace.config import NOISE_SEVERITY_BANDS
+from emotion_detection.config import NOISE_SEVERITY_BANDS
 
 
 def _severity_for(floor_db: float) -> str:

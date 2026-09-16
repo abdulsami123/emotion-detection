@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from autoace.config import (
+from emotion_detection.config import (
     ACTIVATION_HIGH_Z,
     ACTIVATION_LOW_Z,
     ACTIVATION_PEAK_Z,
@@ -37,14 +37,14 @@ from autoace.config import (
     VALENCE_NEG_MAX,
     VALENCE_POS_MIN,
 )
-from autoace.prosody import ActivationProfile, Tier
-from autoace.schema import (
+from emotion_detection.prosody import ActivationProfile, Tier
+from emotion_detection.schema import (
     NEGATIVE_TONES,
     POSITIVE_TONES,
     EmotionalIntensity,
     EmotionalTone,
 )
-from autoace.ser import Dimensions
+from emotion_detection.ser import Dimensions
 
 
 @dataclass

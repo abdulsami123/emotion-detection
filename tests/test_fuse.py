@@ -1,16 +1,16 @@
 import pytest
 
-from autoace.config import TIER_C_MAX_CONF
-from autoace.fuse import (
+from emotion_detection.config import TIER_C_MAX_CONF
+from emotion_detection.fuse import (
     ConfidenceInputs,
     coherence_conflict,
     compute_confidence,
     intensity_from_activation,
     reconcile_intensity,
 )
-from autoace.prosody import ActivationProfile, Tier
-from autoace.schema import EmotionalIntensity, EmotionalTone
-from autoace.ser import Dimensions
+from emotion_detection.prosody import ActivationProfile, Tier
+from emotion_detection.schema import EmotionalIntensity, EmotionalTone
+from emotion_detection.ser import Dimensions
 
 
 def test_high_requires_level_and_escalation():
@@ -126,7 +126,7 @@ def test_missing_llm_voter_is_penalised_beyond_mere_disagreement():
 def test_missing_llm_voter_always_lands_in_the_review_queue():
     """However well everything else agrees, a result produced without the
     primary classifier must be flagged for a human."""
-    from autoace.config import REVIEW_THRESHOLD
+    from emotion_detection.config import REVIEW_THRESHOLD
 
     best_case = ConfidenceInputs(
         tone_voters_agree=True, intensity_voters_agree=True,
@@ -167,9 +167,9 @@ def test_no_stale_vendor_name_in_user_visible_strings():
     import ast
     import pathlib
 
-    from autoace.config import LLM_MODEL
+    from emotion_detection.config import LLM_MODEL
 
-    src_dir = pathlib.Path(__file__).resolve().parent.parent / "autoace"
+    src_dir = pathlib.Path(__file__).resolve().parent.parent / "emotion_detection"
     offenders = []
     for path in sorted(src_dir.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))

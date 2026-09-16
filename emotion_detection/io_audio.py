@@ -15,7 +15,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 
-from autoace.config import SAMPLE_RATE, STEREO_SEPARATE_MAX_CORR
+from emotion_detection.config import SAMPLE_RATE, STEREO_SEPARATE_MAX_CORR
 
 SUPPORTED_SUFFIXES = {".ogg", ".wav", ".mp3", ".m4a", ".flac"}
 

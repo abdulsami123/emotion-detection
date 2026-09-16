@@ -4,7 +4,7 @@
 
 **Goal:** Turn the existing synchronous Gradio dashboard into an asynchronous, durable, job-queue-backed service that survives an ~87-minute 50-file batch and deploys to an Oracle ARM free-tier VM.
 
-**Architecture:** A SQLite job store (`autoace/jobs.py`) is the queue, the checkpoint log, and the results table at once. Two systemd units share it: `autoace-web` (Gradio, enqueues and polls) and `autoace-worker` (claims one file, calls `analyse_file`, records the result, unlinks the audio). `autoace/pipeline.py` is **not modified** — `analyse_file` is already the correct unit of work and already never raises. Caddy terminates TLS on the VM for a DuckDNS hostname.
+**Architecture:** A SQLite job store (`emotion_detection/jobs.py`) is the queue, the checkpoint log, and the results table at once. Two systemd units share it: `emotion_detection-web` (Gradio, enqueues and polls) and `emotion_detection-worker` (claims one file, calls `analyse_file`, records the result, unlinks the audio). `emotion_detection/pipeline.py` is **not modified** — `analyse_file` is already the correct unit of work and already never raises. Caddy terminates TLS on the VM for a DuckDNS hostname.
 
 **Tech Stack:** Python 3.12 (VM) / 3.13 (dev), SQLite in WAL mode, Gradio 5.44.1, systemd, Caddy, Let's Encrypt, Oracle Cloud Ampere A1 (aarch64).
 
@@ -18,11 +18,11 @@ You have not seen this codebase. Five things will save you from breaking it:
 
 1. **`config.py` holds every number.** Nothing numeric belongs anywhere else. Each value is annotated `MEASURED` / `DERIVED` / `UNFITTED`. Respect that convention.
 2. **`analyse_file(path) -> FileResult` never raises.** It returns `FileResult(name, analysis=None, error="...")` on failure. Your worker still wraps it in `try/except`, because an OOM or a bug in the wrapper itself is not the same thing as a decode failure.
-3. **Never let production code read `labels.csv`.** Ground truth reaches the system only via an uploaded manifest. Reading it inside `autoace/` would invalidate the evaluation.
+3. **Never let production code read `labels.csv`.** Ground truth reaches the system only via an uploaded manifest. Reading it inside `emotion_detection/` would invalidate the evaluation.
 4. **Never `git add -A` or `git add .`** — `reference/`, `aa/`, `models/`, `_batches/`, and `tests/fixtures/asr_baseline.json` are gitignored because the audio is confidential and the target repo is public. Stage explicit paths only.
 5. **The existing 8 tests in `tests/test_app.py` must pass unmodified.** They are the regression boundary for this refactor. If you find yourself editing them, you have changed behaviour you were not asked to change.
 
-`FileResult` is a 5-field dataclass in `autoace/pipeline.py:68`:
+`FileResult` is a 5-field dataclass in `emotion_detection/pipeline.py:68`:
 
 ```python
 @dataclass
@@ -42,18 +42,18 @@ Every field maps onto one `files` column, which is why rehydration is lossless a
 
 | File | Status | Responsibility |
 |---|---|---|
-| `autoace/config.py` | Modify (append) | New hosting thresholds. Needs `import os` added — it currently imports only `Path`. |
-| `autoace/jobs.py` | **Create** | The SQLite job store. Pure data: no Gradio import, no model import, no audio decoding. This is what makes it CI-safe. |
-| `autoace/worker.py` | **Create** | The drain loop and its entrypoint. The only new file that imports `pipeline`. |
-| `autoace/app.py` | Modify | `run_batch` splits into `enqueue_batch` + `poll_job`; `TABLE_HEADERS` and `results_to_table` widen to all nine schema fields (Task 13). |
-| `autoace/eval.py` | Modify | `load_manifest` hardened against a BOM, an omitted `result_json` column, and blank rows (Task 14). |
+| `emotion_detection/config.py` | Modify (append) | New hosting thresholds. Needs `import os` added — it currently imports only `Path`. |
+| `emotion_detection/jobs.py` | **Create** | The SQLite job store. Pure data: no Gradio import, no model import, no audio decoding. This is what makes it CI-safe. |
+| `emotion_detection/worker.py` | **Create** | The drain loop and its entrypoint. The only new file that imports `pipeline`. |
+| `emotion_detection/app.py` | Modify | `run_batch` splits into `enqueue_batch` + `poll_job`; `TABLE_HEADERS` and `results_to_table` widen to all nine schema fields (Task 13). |
+| `emotion_detection/eval.py` | Modify | `load_manifest` hardened against a BOM, an omitted `result_json` column, and blank rows (Task 14). |
 | `tests/test_manifest.py` | **Create** | 6 manifest-robustness tests. No audio, no weights — CI-safe. |
 | `tests/test_jobs.py` | **Create** | 9 unit tests. No audio, no weights, runs in CI. |
 | `tests/test_worker.py` | **Create** | One `slow` integration test over one real call. |
 | `tests/test_app.py` | Modify (append only) | New tests for enqueue/poll. **Do not touch the existing 8.** |
 | `deploy/setup.sh` | **Create** | Idempotent VM provisioning. |
-| `deploy/autoace-web.service` | **Create** | systemd unit, Gradio on 127.0.0.1:7860. |
-| `deploy/autoace-worker.service` | **Create** | systemd unit, the drain loop. |
+| `deploy/emotion_detection-web.service` | **Create** | systemd unit, Gradio on 127.0.0.1:7860. |
+| `deploy/emotion_detection-worker.service` | **Create** | systemd unit, the drain loop. |
 | `deploy/Caddyfile` | **Create** | TLS termination + reverse proxy. |
 | `deploy/duckdns.sh` + `.timer` + `.service` | **Create** | Keeps the A record pointed at the VM. |
 | `README.md`, `docs/MEMO.md` | Modify | Hosting, privacy, CI limitation, measured numbers. |
@@ -63,7 +63,7 @@ Every field maps onto one `files` column, which is why rehydration is lossless a
 ## Task 1: Configuration
 
 **Files:**
-- Modify: `autoace/config.py` (add `import os` near the top; append the block at the end)
+- Modify: `emotion_detection/config.py` (add `import os` near the top; append the block at the end)
 
 - [ ] **Step 1: Add the `os` import**
 
@@ -78,9 +78,9 @@ from pathlib import Path
 
 ```python
 # ------------------------------------------------------- hosted dashboard
-# Job store and staged uploads. AUTOACE_DATA_DIR lets the tests point this at
+# Job store and staged uploads. EMOTION_DETECTION_DATA_DIR lets the tests point this at
 # a tmp_path and lets the VM point it at the boot volume.
-DATA_DIR = Path(os.environ.get("AUTOACE_DATA_DIR", REPO_ROOT / "_data"))
+DATA_DIR = Path(os.environ.get("EMOTION_DETECTION_DATA_DIR", REPO_ROOT / "_data"))
 JOBS_DB = DATA_DIR / "jobs.db"
 UPLOAD_DIR = DATA_DIR / "uploads"
 
@@ -98,7 +98,7 @@ MAX_UPLOAD_MB = 500               # DERIVED — 50 files at the largest provided
                                   # (2.8 MB) is ~140 MB; 500 MB is generous headroom
 ```
 
-`REPO_ROOT` already exists in `config.py` — reuse it, do not redefine it. The default is `_data` inside the repo rather than `/opt/autoace/data` so the tests and a local run work without setting anything; the systemd units set `AUTOACE_DATA_DIR` explicitly.
+`REPO_ROOT` already exists in `config.py` — reuse it, do not redefine it. The default is `_data` inside the repo rather than `/opt/emotion_detection/data` so the tests and a local run work without setting anything; the systemd units set `EMOTION_DETECTION_DATA_DIR` explicitly.
 
 - [ ] **Step 3: Add `_data/` to `.gitignore`**
 
@@ -110,13 +110,13 @@ _data/
 
 - [ ] **Step 4: Verify config imports cleanly**
 
-Run: `python -c "from autoace.config import JOBS_DB, MAX_ATTEMPTS, MEAN_SECONDS_PER_FILE; print(JOBS_DB, MAX_ATTEMPTS, MEAN_SECONDS_PER_FILE)"`
+Run: `python -c "from emotion_detection.config import JOBS_DB, MAX_ATTEMPTS, MEAN_SECONDS_PER_FILE; print(JOBS_DB, MAX_ATTEMPTS, MEAN_SECONDS_PER_FILE)"`
 Expected: a path ending in `_data/jobs.db`, then `2 105.0`. No exception.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/config.py .gitignore
+git add emotion_detection/config.py .gitignore
 git commit -m "feat: add hosted-dashboard configuration"
 ```
 
@@ -125,7 +125,7 @@ git commit -m "feat: add hosted-dashboard configuration"
 ## Task 2: Job store schema and connection
 
 **Files:**
-- Create: `autoace/jobs.py`
+- Create: `emotion_detection/jobs.py`
 - Create: `tests/test_jobs.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -141,7 +141,7 @@ import sqlite3
 
 import pytest
 
-from autoace import jobs
+from emotion_detection import jobs
 
 
 @pytest.fixture
@@ -181,11 +181,11 @@ def test_foreign_keys_are_enforced(conn):
 - [ ] **Step 2: Run it to make sure it fails**
 
 Run: `python -m pytest tests/test_jobs.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'autoace.jobs'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'emotion_detection.jobs'`
 
 - [ ] **Step 3: Write the minimal implementation**
 
-Create `autoace/jobs.py`:
+Create `emotion_detection/jobs.py`:
 
 ```python
 """The SQLite job store: queue, checkpoint log, and results table at once.
@@ -206,7 +206,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from autoace.config import JOBS_DB
+from emotion_detection.config import JOBS_DB
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -271,7 +271,7 @@ Expected: 3 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/jobs.py tests/test_jobs.py
+git add emotion_detection/jobs.py tests/test_jobs.py
 git commit -m "feat: SQLite job store schema and connection"
 ```
 
@@ -280,7 +280,7 @@ git commit -m "feat: SQLite job store schema and connection"
 ## Task 3: Enqueue
 
 **Files:**
-- Modify: `autoace/jobs.py`
+- Modify: `emotion_detection/jobs.py`
 - Modify: `tests/test_jobs.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -352,16 +352,16 @@ def test_enqueue_failed_job_records_no_file_rows(conn, tmp_path):
 - [ ] **Step 2: Run it to make sure it fails**
 
 Run: `python -m pytest tests/test_jobs.py -k enqueue -v`
-Expected: FAIL — `AttributeError: module 'autoace.jobs' has no attribute 'enqueue'`
+Expected: FAIL — `AttributeError: module 'emotion_detection.jobs' has no attribute 'enqueue'`
 
 - [ ] **Step 3: Write the minimal implementation**
 
-Append to `autoace/jobs.py`:
+Append to `emotion_detection/jobs.py`:
 
 ```python
 import uuid
 
-from autoace.config import JOB_TTL_SECONDS
+from emotion_detection.config import JOB_TTL_SECONDS
 
 
 def enqueue(
@@ -433,7 +433,7 @@ def enqueue_failed(
     return job_id
 ```
 
-Move `import uuid` up to the module's import block rather than leaving it mid-file, and merge `JOB_TTL_SECONDS` into the existing `from autoace.config import ...` line.
+Move `import uuid` up to the module's import block rather than leaving it mid-file, and merge `JOB_TTL_SECONDS` into the existing `from emotion_detection.config import ...` line.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -443,7 +443,7 @@ Expected: 5 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/jobs.py tests/test_jobs.py
+git add emotion_detection/jobs.py tests/test_jobs.py
 git commit -m "feat: enqueue jobs and validation failures"
 ```
 
@@ -452,7 +452,7 @@ git commit -m "feat: enqueue jobs and validation failures"
 ## Task 4: Exclusive claim
 
 **Files:**
-- Modify: `autoace/jobs.py`
+- Modify: `emotion_detection/jobs.py`
 - Modify: `tests/test_jobs.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -532,11 +532,11 @@ def test_claim_marks_the_job_running(conn, tmp_path):
 - [ ] **Step 2: Run it to make sure it fails**
 
 Run: `python -m pytest tests/test_jobs.py -k claim -v`
-Expected: FAIL — `AttributeError: module 'autoace.jobs' has no attribute 'claim_next'`
+Expected: FAIL — `AttributeError: module 'emotion_detection.jobs' has no attribute 'claim_next'`
 
 - [ ] **Step 3: Write the minimal implementation**
 
-Add the dataclass near the top of `autoace/jobs.py` (after the imports), then append the function:
+Add the dataclass near the top of `emotion_detection/jobs.py` (after the imports), then append the function:
 
 ```python
 from dataclasses import dataclass
@@ -600,7 +600,7 @@ Expected: 9 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/jobs.py tests/test_jobs.py
+git add emotion_detection/jobs.py tests/test_jobs.py
 git commit -m "feat: exclusive file claiming with claim-time attempt counting"
 ```
 
@@ -609,7 +609,7 @@ git commit -m "feat: exclusive file claiming with claim-time attempt counting"
 ## Task 5: Complete, fail, and job finalisation
 
 **Files:**
-- Modify: `autoace/jobs.py`
+- Modify: `emotion_detection/jobs.py`
 - Modify: `tests/test_jobs.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -617,8 +617,8 @@ git commit -m "feat: exclusive file claiming with claim-time attempt counting"
 Append to `tests/test_jobs.py`:
 
 ```python
-from autoace.pipeline import FileResult
-from autoace.schema import CallAnalysis
+from emotion_detection.pipeline import FileResult
+from emotion_detection.schema import CallAnalysis
 
 
 def _analysis(**overrides) -> CallAnalysis:
@@ -740,11 +740,11 @@ def test_fail_marks_the_row_failed_and_unlinks(conn, tmp_path):
 - [ ] **Step 2: Run it to make sure it fails**
 
 Run: `python -m pytest tests/test_jobs.py -k "complete or fail" -v`
-Expected: FAIL — `AttributeError: module 'autoace.jobs' has no attribute 'complete'`
+Expected: FAIL — `AttributeError: module 'emotion_detection.jobs' has no attribute 'complete'`
 
 - [ ] **Step 3: Write the minimal implementation**
 
-Append to `autoace/jobs.py`:
+Append to `emotion_detection/jobs.py`:
 
 ```python
 import shutil
@@ -836,7 +836,7 @@ Expected: 13 passed.
 
 - [ ] **Step 5: Verify the store still imports without torch**
 
-Run: `python -c "import sys; import autoace.jobs; assert 'torch' not in sys.modules; print('jobs.py is torch-free')"`
+Run: `python -c "import sys; import emotion_detection.jobs; assert 'torch' not in sys.modules; print('jobs.py is torch-free')"`
 Expected: `jobs.py is torch-free`
 
 This guard matters: if it fails, `tests/test_jobs.py` stops being runnable in CI.
@@ -844,7 +844,7 @@ This guard matters: if it fails, `tests/test_jobs.py` stops being runnable in CI
 - [ ] **Step 6: Commit**
 
 ```bash
-git add autoace/jobs.py tests/test_jobs.py
+git add emotion_detection/jobs.py tests/test_jobs.py
 git commit -m "feat: record results, unlink audio per file, finalise jobs"
 ```
 
@@ -853,7 +853,7 @@ git commit -m "feat: record results, unlink audio per file, finalise jobs"
 ## Task 6: Reconcile — the crash-loop guard
 
 **Files:**
-- Modify: `autoace/jobs.py`
+- Modify: `emotion_detection/jobs.py`
 - Modify: `tests/test_jobs.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -884,7 +884,7 @@ def test_reconcile_fails_a_row_past_max_attempts(conn, tmp_path):
     """The OOM crash-loop guard. If the NLI fallback pushes the worker past
     available RAM, the OOM killer takes it mid-file, reconcile requeues it, and
     it dies again on the same file - forever. MAX_ATTEMPTS breaks that."""
-    from autoace.config import MAX_ATTEMPTS
+    from emotion_detection.config import MAX_ATTEMPTS
 
     workdir, paths = _make_audio(tmp_path, "a.ogg")
     job_id = jobs.enqueue(
@@ -927,7 +927,7 @@ def test_reconcile_leaves_a_fresh_running_row_alone(conn, tmp_path):
 def test_reconcile_finalises_a_job_whose_last_file_it_failed(conn, tmp_path):
     """If reconcile is what exhausts the final file, it must still close the
     job - otherwise the job sits at `running` forever with nothing to run."""
-    from autoace.config import MAX_ATTEMPTS
+    from emotion_detection.config import MAX_ATTEMPTS
 
     workdir, paths = _make_audio(tmp_path, "a.ogg")
     job_id = jobs.enqueue(
@@ -946,14 +946,14 @@ def test_reconcile_finalises_a_job_whose_last_file_it_failed(conn, tmp_path):
 - [ ] **Step 2: Run it to make sure it fails**
 
 Run: `python -m pytest tests/test_jobs.py -k reconcile -v`
-Expected: FAIL — `AttributeError: module 'autoace.jobs' has no attribute 'reconcile'`
+Expected: FAIL — `AttributeError: module 'emotion_detection.jobs' has no attribute 'reconcile'`
 
 - [ ] **Step 3: Write the minimal implementation**
 
-Append to `autoace/jobs.py`:
+Append to `emotion_detection/jobs.py`:
 
 ```python
-from autoace.config import MAX_ATTEMPTS, STALE_RUNNING_SECONDS
+from emotion_detection.config import MAX_ATTEMPTS, STALE_RUNNING_SECONDS
 
 
 def reconcile(
@@ -1073,7 +1073,7 @@ def test_reconcile_finalises_a_job_orphaned_at_running(conn, tmp_path):
     assert not workdir.exists(), "the orphaned job's audio must be cleaned up"
 ```
 
-Merge `MAX_ATTEMPTS` and `STALE_RUNNING_SECONDS` into the existing `from autoace.config import ...` line rather than adding a second import statement.
+Merge `MAX_ATTEMPTS` and `STALE_RUNNING_SECONDS` into the existing `from emotion_detection.config import ...` line rather than adding a second import statement.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -1083,7 +1083,7 @@ Expected: 17 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/jobs.py tests/test_jobs.py
+git add emotion_detection/jobs.py tests/test_jobs.py
 git commit -m "feat: reconcile stale work with a retry cap to break OOM crash loops"
 ```
 
@@ -1092,7 +1092,7 @@ git commit -m "feat: reconcile stale work with a retry cap to break OOM crash lo
 ## Task 7: Expiry
 
 **Files:**
-- Modify: `autoace/jobs.py`
+- Modify: `emotion_detection/jobs.py`
 - Modify: `tests/test_jobs.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -1107,7 +1107,7 @@ def test_expire_removes_old_jobs_and_their_files(conn, tmp_path):
         validation_json="{}", manifest_labelled=False,
     )
 
-    from autoace.config import JOB_TTL_SECONDS
+    from emotion_detection.config import JOB_TTL_SECONDS
     import time as _time
 
     removed = jobs.expire(conn, now=_time.time() + JOB_TTL_SECONDS + 1.0)
@@ -1135,11 +1135,11 @@ def test_expire_leaves_live_jobs_alone(conn, tmp_path):
 - [ ] **Step 2: Run it to make sure it fails**
 
 Run: `python -m pytest tests/test_jobs.py -k expire -v`
-Expected: FAIL — `AttributeError: module 'autoace.jobs' has no attribute 'expire'`
+Expected: FAIL — `AttributeError: module 'emotion_detection.jobs' has no attribute 'expire'`
 
 - [ ] **Step 3: Write the minimal implementation**
 
-Append to `autoace/jobs.py`:
+Append to `emotion_detection/jobs.py`:
 
 ```python
 def expire(conn: sqlite3.Connection, now: float | None = None) -> int:
@@ -1169,7 +1169,7 @@ Expected: 19 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/jobs.py tests/test_jobs.py
+git add emotion_detection/jobs.py tests/test_jobs.py
 git commit -m "feat: expire jobs past their retention window"
 ```
 
@@ -1178,7 +1178,7 @@ git commit -m "feat: expire jobs past their retention window"
 ## Task 8: Status projection and lossless rehydration
 
 **Files:**
-- Modify: `autoace/jobs.py`
+- Modify: `emotion_detection/jobs.py`
 - Modify: `tests/test_jobs.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -1274,14 +1274,14 @@ def test_job_results_include_files_not_yet_processed(conn, tmp_path):
 - [ ] **Step 2: Run it to make sure it fails**
 
 Run: `python -m pytest tests/test_jobs.py -k "job_status or job_results" -v`
-Expected: FAIL — `AttributeError: module 'autoace.jobs' has no attribute 'job_status'`
+Expected: FAIL — `AttributeError: module 'emotion_detection.jobs' has no attribute 'job_status'`
 
 - [ ] **Step 3: Write the minimal implementation**
 
-Append to `autoace/jobs.py`:
+Append to `emotion_detection/jobs.py`:
 
 ```python
-from autoace.config import MEAN_SECONDS_PER_FILE
+from emotion_detection.config import MEAN_SECONDS_PER_FILE
 
 
 @dataclass(frozen=True)
@@ -1357,8 +1357,8 @@ def job_results(conn: sqlite3.Connection, job_id: str) -> list["FileResult"]:
     Imported lazily: keeping `pipeline` (and therefore torch) out of this
     module's import graph is what makes the job-store tests runnable in CI.
     """
-    from autoace.pipeline import FileResult
-    from autoace.schema import CallAnalysis
+    from emotion_detection.pipeline import FileResult
+    from emotion_detection.schema import CallAnalysis
 
     results = []
     for row in conn.execute(
@@ -1393,7 +1393,7 @@ Expected: 23 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/jobs.py tests/test_jobs.py
+git add emotion_detection/jobs.py tests/test_jobs.py
 git commit -m "feat: job status projection and lossless FileResult rehydration"
 ```
 
@@ -1402,7 +1402,7 @@ git commit -m "feat: job status projection and lossless FileResult rehydration"
 ## Task 9: The worker
 
 **Files:**
-- Create: `autoace/worker.py`
+- Create: `emotion_detection/worker.py`
 - Create: `tests/test_worker.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -1419,9 +1419,9 @@ logic is covered without touching audio by injecting a fake analyser.
 
 import pytest
 
-from autoace import jobs, worker
-from autoace.config import MAX_ATTEMPTS, reference_call
-from autoace.pipeline import FileResult
+from emotion_detection import jobs, worker
+from emotion_detection.config import MAX_ATTEMPTS, reference_call
+from emotion_detection.pipeline import FileResult
 
 
 @pytest.fixture
@@ -1519,11 +1519,11 @@ def test_drain_once_processes_a_real_call(conn, tmp_path):
 - [ ] **Step 2: Run it to make sure it fails**
 
 Run: `python -m pytest tests/test_worker.py -m "not slow" -v`
-Expected: FAIL — `ImportError: cannot import name 'worker' from 'autoace'`
+Expected: FAIL — `ImportError: cannot import name 'worker' from 'emotion_detection'`
 
 - [ ] **Step 3: Write the minimal implementation**
 
-Create `autoace/worker.py`:
+Create `emotion_detection/worker.py`:
 
 ```python
 """The drain loop.
@@ -1545,18 +1545,18 @@ import sys
 import time
 from typing import Callable
 
-from autoace import jobs
-from autoace.config import MAX_ATTEMPTS, WORKER_POLL_SECONDS
+from emotion_detection import jobs
+from emotion_detection.config import MAX_ATTEMPTS, WORKER_POLL_SECONDS
 
-log = logging.getLogger("autoace.worker")
+log = logging.getLogger("emotion_detection.worker")
 
 Analyser = Callable[[str], object]
 
 
 def _default_analyser(path: str):
-    """Imported lazily so `import autoace.worker` stays cheap - the tests that
+    """Imported lazily so `import emotion_detection.worker` stays cheap - the tests that
     inject a fake analyser must not pay for loading torch."""
-    from autoace.pipeline import analyse_file
+    from emotion_detection.pipeline import analyse_file
 
     return analyse_file(path)
 
@@ -1657,7 +1657,7 @@ Expected: 1 passed, in roughly 130–160 seconds. Requires `reference/call_003.o
 - [ ] **Step 6: Commit**
 
 ```bash
-git add autoace/worker.py tests/test_worker.py
+git add emotion_detection/worker.py tests/test_worker.py
 git commit -m "feat: worker drain loop with startup reconcile and expiry sweep"
 ```
 
@@ -1666,7 +1666,7 @@ git commit -m "feat: worker drain loop with startup reconcile and expiry sweep"
 ## Task 10: Split `run_batch` into `enqueue_batch`
 
 **Files:**
-- Modify: `autoace/app.py:243-323` (replace `run_batch`)
+- Modify: `emotion_detection/app.py:243-323` (replace `run_batch`)
 - Modify: `tests/test_app.py` (append only)
 
 - [ ] **Step 1: Write the failing test**
@@ -1677,13 +1677,13 @@ Append to `tests/test_app.py`:
 def test_enqueue_batch_creates_a_job_without_running_inference(tmp_path, monkeypatch):
     """Enqueue must return immediately. A 50-file batch takes ~87 minutes; no
     HTTP request survives that, which is the entire reason for the job queue."""
-    monkeypatch.setenv("AUTOACE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("EMOTION_DETECTION_DATA_DIR", str(tmp_path / "data"))
 
     import importlib
 
-    from autoace import app as app_module
-    from autoace import config as config_module
-    from autoace import jobs as jobs_module
+    from emotion_detection import app as app_module
+    from emotion_detection import config as config_module
+    from emotion_detection import jobs as jobs_module
 
     importlib.reload(config_module)
     importlib.reload(jobs_module)
@@ -1716,13 +1716,13 @@ def test_enqueue_batch_creates_a_job_without_running_inference(tmp_path, monkeyp
 def test_enqueue_batch_records_a_validation_failure_as_a_failed_job(tmp_path, monkeypatch):
     """A batch with no manifest must produce a job row carrying the reason, so
     a job-ID lookup can still explain it after a reload."""
-    monkeypatch.setenv("AUTOACE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("EMOTION_DETECTION_DATA_DIR", str(tmp_path / "data"))
 
     import importlib
 
-    from autoace import app as app_module
-    from autoace import config as config_module
-    from autoace import jobs as jobs_module
+    from emotion_detection import app as app_module
+    from emotion_detection import config as config_module
+    from emotion_detection import jobs as jobs_module
 
     importlib.reload(config_module)
     importlib.reload(jobs_module)
@@ -1749,11 +1749,11 @@ def test_enqueue_batch_records_a_validation_failure_as_a_failed_job(tmp_path, mo
 - [ ] **Step 2: Run it to make sure it fails**
 
 Run: `python -m pytest tests/test_app.py -k enqueue_batch -v`
-Expected: FAIL — `AttributeError: module 'autoace.app' has no attribute 'enqueue_batch'`
+Expected: FAIL — `AttributeError: module 'emotion_detection.app' has no attribute 'enqueue_batch'`
 
 - [ ] **Step 3: Replace `run_batch` with `_describe_validation` and `enqueue_batch`**
 
-In `autoace/app.py`, delete the whole `run_batch` function (currently lines 243–323) and put this in its place. Add `from autoace import jobs` and `from autoace.config import MAX_UPLOAD_MB, REVIEW_THRESHOLD, UI_POLL_SECONDS` to the imports.
+In `emotion_detection/app.py`, delete the whole `run_batch` function (currently lines 243–323) and put this in its place. Add `from emotion_detection import jobs` and `from emotion_detection.config import MAX_UPLOAD_MB, REVIEW_THRESHOLD, UI_POLL_SECONDS` to the imports.
 
 ```python
 def _describe_validation(workdir: Path, validation: BatchValidation) -> list[str]:
@@ -1859,7 +1859,7 @@ Expected: 10 passed. The original 8 must pass **unmodified** — if any of them 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/app.py tests/test_app.py
+git add emotion_detection/app.py tests/test_app.py
 git commit -m "feat: enqueue batches instead of processing them inline"
 ```
 
@@ -1868,7 +1868,7 @@ git commit -m "feat: enqueue batches instead of processing them inline"
 ## Task 11: `poll_job`
 
 **Files:**
-- Modify: `autoace/app.py`
+- Modify: `emotion_detection/app.py`
 - Modify: `tests/test_app.py` (append only)
 
 - [ ] **Step 1: Write the failing test**
@@ -1879,19 +1879,19 @@ Append to `tests/test_app.py`:
 def test_poll_job_projects_rows_into_the_existing_table_shape(tmp_path, monkeypatch):
     """poll_job must feed the untouched results_to_table, so the review queue
     keeps sorting flagged rows to the top."""
-    monkeypatch.setenv("AUTOACE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("EMOTION_DETECTION_DATA_DIR", str(tmp_path / "data"))
 
     import importlib
 
-    from autoace import app as app_module
-    from autoace import config as config_module
-    from autoace import jobs as jobs_module
+    from emotion_detection import app as app_module
+    from emotion_detection import config as config_module
+    from emotion_detection import jobs as jobs_module
 
     importlib.reload(config_module)
     importlib.reload(jobs_module)
     importlib.reload(app_module)
 
-    from autoace.pipeline import FileResult
+    from emotion_detection.pipeline import FileResult
 
     batch = tmp_path / "batch"
     batch.mkdir()
@@ -1929,13 +1929,13 @@ def test_poll_job_projects_rows_into_the_existing_table_shape(tmp_path, monkeypa
 
 
 def test_poll_job_reports_an_unknown_id_without_raising(tmp_path, monkeypatch):
-    monkeypatch.setenv("AUTOACE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("EMOTION_DETECTION_DATA_DIR", str(tmp_path / "data"))
 
     import importlib
 
-    from autoace import app as app_module
-    from autoace import config as config_module
-    from autoace import jobs as jobs_module
+    from emotion_detection import app as app_module
+    from emotion_detection import config as config_module
+    from emotion_detection import jobs as jobs_module
 
     importlib.reload(config_module)
     importlib.reload(jobs_module)
@@ -1950,12 +1950,12 @@ def test_poll_job_reports_an_unknown_id_without_raising(tmp_path, monkeypatch):
 
 def test_poll_job_with_no_id_is_a_no_op(tmp_path, monkeypatch):
     """The UI timer fires before anything is queued; that must be harmless."""
-    monkeypatch.setenv("AUTOACE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("EMOTION_DETECTION_DATA_DIR", str(tmp_path / "data"))
 
     import importlib
 
-    from autoace import app as app_module
-    from autoace import config as config_module
+    from emotion_detection import app as app_module
+    from emotion_detection import config as config_module
 
     importlib.reload(config_module)
     importlib.reload(app_module)
@@ -1969,7 +1969,7 @@ Add this helper near the top of `tests/test_app.py`, after the existing imports 
 
 ```python
 def _analysis(**overrides):
-    from autoace.schema import CallAnalysis
+    from emotion_detection.schema import CallAnalysis
 
     data = {
         "emotional_tone": "neutral",
@@ -1989,11 +1989,11 @@ def _analysis(**overrides):
 - [ ] **Step 2: Run it to make sure it fails**
 
 Run: `python -m pytest tests/test_app.py -k poll_job -v`
-Expected: FAIL — `AttributeError: module 'autoace.app' has no attribute 'poll_job'`
+Expected: FAIL — `AttributeError: module 'emotion_detection.app' has no attribute 'poll_job'`
 
 - [ ] **Step 3: Write the minimal implementation**
 
-Append to `autoace/app.py`, after `enqueue_batch`:
+Append to `emotion_detection/app.py`, after `enqueue_batch`:
 
 ```python
 def _format_eta(seconds: float) -> str:
@@ -2049,7 +2049,7 @@ def poll_job(job_id: str):
 
     table = results_to_table(results)
 
-    out_dir = Path(tempfile.mkdtemp(prefix="autoace_out_"))
+    out_dir = Path(tempfile.mkdtemp(prefix="emotion_detection_out_"))
     csv_path = out_dir / "results.csv"
     json_path = out_dir / "results.json"
     csv_path.write_text(results_to_csv(results), encoding="utf-8")
@@ -2081,7 +2081,7 @@ Expected: 13 passed (the original 8 plus 5 new).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/app.py tests/test_app.py
+git add emotion_detection/app.py tests/test_app.py
 git commit -m "feat: poll_job projects the job store into the existing UI shape"
 ```
 
@@ -2090,8 +2090,8 @@ git commit -m "feat: poll_job projects the job store into the existing UI shape"
 ## Task 12: Persist the manifest so the scoring view survives
 
 **Files:**
-- Modify: `autoace/jobs.py` (one schema column)
-- Modify: `autoace/app.py`
+- Modify: `emotion_detection/jobs.py` (one schema column)
+- Modify: `emotion_detection/app.py`
 - Modify: `tests/test_app.py` (append only)
 
 The workdir is removed when a job finishes, taking the manifest with it — so the labelled-batch scoring view from spec §13 would break. Store the manifest CSV text on the job row instead.
@@ -2105,20 +2105,20 @@ def test_scoring_view_renders_after_the_workdir_is_gone(tmp_path, monkeypatch):
     """The manifest lives in the workdir, which is deleted when the job
     finishes. Scoring a labelled batch must still work afterwards, so the
     manifest text is persisted on the job row."""
-    monkeypatch.setenv("AUTOACE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("EMOTION_DETECTION_DATA_DIR", str(tmp_path / "data"))
 
     import importlib
     import json as _json
 
-    from autoace import app as app_module
-    from autoace import config as config_module
-    from autoace import jobs as jobs_module
+    from emotion_detection import app as app_module
+    from emotion_detection import config as config_module
+    from emotion_detection import jobs as jobs_module
 
     importlib.reload(config_module)
     importlib.reload(jobs_module)
     importlib.reload(app_module)
 
-    from autoace.pipeline import FileResult
+    from emotion_detection.pipeline import FileResult
 
     expected = _analysis().model_dump_json()
     batch = tmp_path / "batch"
@@ -2156,7 +2156,7 @@ Expected: FAIL — the assertion `metrics must be real, not a message` fails, be
 
 - [ ] **Step 3: Add the column and persist the manifest**
 
-In `autoace/jobs.py`, add one column to the `jobs` table in `_SCHEMA`:
+In `emotion_detection/jobs.py`, add one column to the `jobs` table in `_SCHEMA`:
 
 ```sql
     manifest_csv      TEXT,
@@ -2222,7 +2222,7 @@ Insert that line in the `JobStatus(...)` construction immediately after `validat
 
 - [ ] **Step 4: Pass the manifest at enqueue time and score from it**
 
-In `autoace/app.py`, inside `enqueue_batch`, read the manifest text before creating the job:
+In `emotion_detection/app.py`, inside `enqueue_batch`, read the manifest text before creating the job:
 
 ```python
         manifest_labelled = False
@@ -2252,7 +2252,7 @@ Then replace the scoring block in `poll_job` with a real computation. `load_mani
         # load_manifest reads a path, and the original manifest went away with
         # the workdir - so round-trip the persisted text through a temp file
         # rather than duplicating the CSV parsing here.
-        manifest_dir = Path(tempfile.mkdtemp(prefix="autoace_manifest_"))
+        manifest_dir = Path(tempfile.mkdtemp(prefix="emotion_detection_manifest_"))
         manifest_file = manifest_dir / "manifest.csv"
         manifest_file.write_text(status.manifest_csv, encoding="utf-8")
         try:
@@ -2287,7 +2287,7 @@ Expected: 14 app tests + 23 jobs tests pass. The original 8 app tests still unmo
 - [ ] **Step 7: Commit**
 
 ```bash
-git add autoace/jobs.py autoace/app.py tests/test_app.py
+git add emotion_detection/jobs.py emotion_detection/app.py tests/test_app.py
 git commit -m "feat: persist the manifest so labelled-batch scoring survives cleanup"
 ```
 
@@ -2296,7 +2296,7 @@ git commit -m "feat: persist the manifest so labelled-batch scoring survives cle
 ## Task 13: Display all nine schema fields
 
 **Files:**
-- Modify: `autoace/app.py:45-55` (`TABLE_HEADERS`) and `results_to_table`
+- Modify: `emotion_detection/app.py:45-55` (`TABLE_HEADERS`) and `results_to_table`
 - Modify: `tests/test_app.py` (append only)
 
 Brief §7 says: *"Results: Display the prediction for each audio file using the required output schema."* The table currently shows **six** of the nine schema fields. `background_noise_present`, `speaker_overlap_present`, and `long_silence_present` are exported to CSV and JSON but never displayed. §8 puts 10% of the total score on the dashboard, explicitly including "result review", so this is a scored gap rather than a cosmetic one.
@@ -2313,7 +2313,7 @@ def test_table_displays_every_schema_field():
     output schema. Three boolean fields were exported but never shown:
     background_noise_present, speaker_overlap_present, long_silence_present.
     """
-    from autoace.app import SCHEMA_COLUMNS, TABLE_HEADERS, results_to_table
+    from emotion_detection.app import SCHEMA_COLUMNS, TABLE_HEADERS, results_to_table
 
     rows = results_to_table(
         [
@@ -2355,7 +2355,7 @@ def test_table_displays_every_schema_field():
 def test_table_shows_boolean_fields_as_readable_values():
     """A raw Python True/False in a Gradio dataframe reads poorly next to enum
     strings; yes/no keeps the row scannable."""
-    from autoace.app import results_to_table
+    from emotion_detection.app import results_to_table
 
     rows = results_to_table(
         [
@@ -2376,7 +2376,7 @@ def test_table_shows_boolean_fields_as_readable_values():
 def test_error_rows_still_have_one_cell_per_header():
     """A failed file must not produce a short row - Gradio silently mangles a
     dataframe whose rows have inconsistent width."""
-    from autoace.app import TABLE_HEADERS, results_to_table
+    from emotion_detection.app import TABLE_HEADERS, results_to_table
 
     rows = results_to_table(
         [FileResult(name="bad.ogg", analysis=None, error="could not decode")]
@@ -2392,7 +2392,7 @@ Expected: FAIL — `test_table_displays_every_schema_field` fails on `no column 
 
 - [ ] **Step 3: Widen `TABLE_HEADERS`**
 
-Replace the `TABLE_HEADERS` block in `autoace/app.py` (currently lines 45–55):
+Replace the `TABLE_HEADERS` block in `emotion_detection/app.py` (currently lines 45–55):
 
 ```python
 # One column per schema field plus the filename, the review flag, and the tone
@@ -2513,7 +2513,7 @@ def test_poll_job_rows_all_match_the_header_width(tmp_path, monkeypatch):
     wide, which is why row shape lives only in results_to_table."""
     app_module, jobs_module = _reload_modules(monkeypatch, tmp_path)
 
-    from autoace.pipeline import FileResult
+    from emotion_detection.pipeline import FileResult
 
     batch = tmp_path / "batch"
     batch.mkdir()
@@ -2556,7 +2556,7 @@ Run:
 
 ```bash
 python -c "
-from autoace.app import SCHEMA_COLUMNS, TABLE_HEADERS
+from emotion_detection.app import SCHEMA_COLUMNS, TABLE_HEADERS
 print('schema fields:', len(SCHEMA_COLUMNS) - 1)
 print('table columns:', len(TABLE_HEADERS))
 assert len(TABLE_HEADERS) == (len(SCHEMA_COLUMNS) - 1) + 3, 'expect 9 fields + file + flag + notes'
@@ -2569,7 +2569,7 @@ Expected: `schema fields: 9`, `table columns: 12`, then `every schema field is d
 - [ ] **Step 7: Commit**
 
 ```bash
-git add autoace/app.py tests/test_app.py
+git add emotion_detection/app.py tests/test_app.py
 git commit -m "fix: display all nine schema fields in the results table"
 ```
 
@@ -2578,7 +2578,7 @@ git commit -m "fix: display all nine schema fields in the results table"
 ## Task 14: Manifest robustness for the hidden test set
 
 **Files:**
-- Modify: `autoace/eval.py:28-42` (`load_manifest`)
+- Modify: `emotion_detection/eval.py:28-42` (`load_manifest`)
 - Create: `tests/test_manifest.py`
 
 Brief §7 states the CSV `result_json` column "may be empty or omitted from scoring input" for an unlabeled hidden test set, and that the manifest is what maps every audio file to a row. Two failure modes would take down an entire hidden-set batch, not one file:
@@ -2602,7 +2602,7 @@ are all things an evaluator-supplied CSV plausibly does.
 
 import pytest
 
-from autoace.eval import load_manifest
+from emotion_detection.eval import load_manifest
 
 
 def test_manifest_with_a_utf8_bom_is_readable(tmp_path):
@@ -2679,7 +2679,7 @@ Expected: FAIL. `test_manifest_with_a_utf8_bom_is_readable` fails with `KeyError
 
 - [ ] **Step 3: Harden `load_manifest`**
 
-Replace `load_manifest` in `autoace/eval.py`:
+Replace `load_manifest` in `emotion_detection/eval.py`:
 
 ```python
 def load_manifest(path: str) -> list[ManifestRow]:
@@ -2741,7 +2741,7 @@ Expected: all pass. `validate_batch` and the scoring path both go through `load_
 - [ ] **Step 6: Commit**
 
 ```bash
-git add autoace/eval.py tests/test_manifest.py
+git add emotion_detection/eval.py tests/test_manifest.py
 git commit -m "fix: manifest survives a BOM, an omitted result_json column, and blank rows"
 ```
 
@@ -2750,7 +2750,7 @@ git commit -m "fix: manifest survives a BOM, an omitted result_json column, and 
 ## Task 15: The asynchronous UI
 
 **Files:**
-- Modify: `autoace/app.py:328-383` (`build_app` and `__main__`)
+- Modify: `emotion_detection/app.py:328-383` (`build_app` and `__main__`)
 
 There is no unit test for Blocks wiring — the existing `test_app_builds_without_launching` covers construction, and it must keep passing.
 
@@ -2764,9 +2764,9 @@ def build_app() -> gr.Blocks:
     handler only enqueues, and a gr.Timer polls the job store. Closing the tab
     stops the timer but not the worker, which is why the job-ID box exists.
     """
-    with gr.Blocks(title="AutoAce - Call Tone Review") as demo:
+    with gr.Blocks(title="Emotion Detection - Call Tone Review") as demo:
         gr.Markdown(
-            "# AutoAce batch review\n"
+            "# Emotion Detection batch review\n"
             "Upload a folder or ZIP containing audio files plus one CSV "
             "manifest (`name,result_json`). Validation runs before any "
             "inference. Processing happens in the background at roughly "
@@ -2838,11 +2838,11 @@ def build_app() -> gr.Blocks:
 
 ```python
 if __name__ == "__main__":
-    user = os.environ.get("AUTOACE_USER", "admin")
-    password = os.environ.get("AUTOACE_PASSWORD")
+    user = os.environ.get("EMOTION_DETECTION_USER", "admin")
+    password = os.environ.get("EMOTION_DETECTION_PASSWORD")
     if not password:
         raise SystemExit(
-            "AUTOACE_PASSWORD must be set in the environment - refusing to "
+            "EMOTION_DETECTION_PASSWORD must be set in the environment - refusing to "
             "start a hosted dashboard with no login credential."
         )
 
@@ -2851,7 +2851,7 @@ if __name__ == "__main__":
         # 127.0.0.1, not 0.0.0.0: Caddy terminates TLS and is the only listener
         # reachable from off-box, so a wrong firewall rule cannot expose the
         # app over plaintext HTTP.
-        server_name=os.environ.get("AUTOACE_BIND", "127.0.0.1"),
+        server_name=os.environ.get("EMOTION_DETECTION_BIND", "127.0.0.1"),
         server_port=int(os.environ.get("PORT", "7860")),
         auth=(user, password),
         max_file_size=f"{MAX_UPLOAD_MB}mb",
@@ -2868,21 +2868,21 @@ Expected: 14 passed, including the unmodified `test_app_builds_without_launching
 In one shell:
 
 ```bash
-AUTOACE_DATA_DIR=./_data python -m autoace.worker
+EMOTION_DETECTION_DATA_DIR=./_data python -m emotion_detection.worker
 ```
 
 In another:
 
 ```bash
-AUTOACE_DATA_DIR=./_data AUTOACE_USER=autoace AUTOACE_PASSWORD=test AUTOACE_BIND=127.0.0.1 python -m autoace.app
+EMOTION_DETECTION_DATA_DIR=./_data EMOTION_DETECTION_USER=emotion_detection EMOTION_DETECTION_PASSWORD=test EMOTION_DETECTION_BIND=127.0.0.1 python -m emotion_detection.app
 ```
 
-Open `http://127.0.0.1:7860`, log in as `autoace` / `test`, upload a ZIP of `reference/call_003.ogg` plus a two-column manifest. Expected: a job ID appears immediately, the status line updates on its own every 5 s, and the row completes in roughly 130–160 s. Then reload the page, paste the job ID into **Look up a job**, and confirm the results come back.
+Open `http://127.0.0.1:7860`, log in as `emotion_detection` / `test`, upload a ZIP of `reference/call_003.ogg` plus a two-column manifest. Expected: a job ID appears immediately, the status line updates on its own every 5 s, and the row completes in roughly 130–160 s. Then reload the page, paste the job ID into **Look up a job**, and confirm the results come back.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/app.py
+git add emotion_detection/app.py
 git commit -m "feat: asynchronous dashboard with timer polling and job lookup"
 ```
 
@@ -2892,31 +2892,31 @@ git commit -m "feat: asynchronous dashboard with timer polling and job lookup"
 
 **Files:**
 - Create: `deploy/setup.sh`
-- Create: `deploy/autoace-web.service`
-- Create: `deploy/autoace-worker.service`
+- Create: `deploy/emotion_detection-web.service`
+- Create: `deploy/emotion_detection-worker.service`
 - Create: `deploy/Caddyfile`
 - Create: `deploy/duckdns.sh`, `deploy/duckdns.service`, `deploy/duckdns.timer`
 
 These are not unit-testable; verification is the deploy itself in Task 17.
 
-- [ ] **Step 1: Write `deploy/autoace-web.service`**
+- [ ] **Step 1: Write `deploy/emotion_detection-web.service`**
 
 ```ini
 [Unit]
-Description=AutoAce dashboard (web)
+Description=Emotion Detection dashboard (web)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/opt/autoace/repo
-EnvironmentFile=/etc/autoace.env
-Environment=AUTOACE_DATA_DIR=/opt/autoace/data
-Environment=HF_HOME=/opt/autoace/hf
-Environment=AUTOACE_BIND=127.0.0.1
+WorkingDirectory=/opt/emotion_detection/repo
+EnvironmentFile=/etc/emotion_detection.env
+Environment=EMOTION_DETECTION_DATA_DIR=/opt/emotion_detection/data
+Environment=HF_HOME=/opt/emotion_detection/hf
+Environment=EMOTION_DETECTION_BIND=127.0.0.1
 Environment=PORT=7860
-ExecStart=/opt/autoace/venv/bin/python -m autoace.app
+ExecStart=/opt/emotion_detection/venv/bin/python -m emotion_detection.app
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -2926,26 +2926,26 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
-- [ ] **Step 2: Write `deploy/autoace-worker.service`**
+- [ ] **Step 2: Write `deploy/emotion_detection-worker.service`**
 
 `OMP_NUM_THREADS=2` matches the measured 2-vCPU shape and stops OpenMP from spawning more threads than the box has, which on a 2-core VM causes contention rather than speed.
 
 ```ini
 [Unit]
-Description=AutoAce dashboard (worker)
+Description=Emotion Detection dashboard (worker)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/opt/autoace/repo
-EnvironmentFile=/etc/autoace.env
-Environment=AUTOACE_DATA_DIR=/opt/autoace/data
-Environment=HF_HOME=/opt/autoace/hf
+WorkingDirectory=/opt/emotion_detection/repo
+EnvironmentFile=/etc/emotion_detection.env
+Environment=EMOTION_DETECTION_DATA_DIR=/opt/emotion_detection/data
+Environment=HF_HOME=/opt/emotion_detection/hf
 Environment=OMP_NUM_THREADS=2
 Environment=MKL_NUM_THREADS=2
-ExecStart=/opt/autoace/venv/bin/python -m autoace.worker
+ExecStart=/opt/emotion_detection/venv/bin/python -m emotion_detection.worker
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -2957,14 +2957,14 @@ WantedBy=multi-user.target
 
 - [ ] **Step 3: Write `deploy/Caddyfile`**
 
-`{$AUTOACE_HOSTNAME}` is substituted by Caddy from its environment. Port 80 stays open permanently — ACME renewals need it, not just the first issuance.
+`{$EMOTION_DETECTION_HOSTNAME}` is substituted by Caddy from its environment. Port 80 stays open permanently — ACME renewals need it, not just the first issuance.
 
 ```
-{$AUTOACE_HOSTNAME} {
+{$EMOTION_DETECTION_HOSTNAME} {
 	encode gzip
 
 	# Batch uploads are up to ~140 MB for 50 calls; 500 MB matches
-	# MAX_UPLOAD_MB in autoace/config.py.
+	# MAX_UPLOAD_MB in emotion_detection/config.py.
 	request_body {
 		max_size 500MB
 	}
@@ -3011,19 +3011,19 @@ echo "duckdns update OK"
 
 ```ini
 [Unit]
-Description=Refresh the AutoAce DuckDNS record
+Description=Refresh the Emotion Detection DuckDNS record
 
 [Service]
 Type=oneshot
-EnvironmentFile=/etc/autoace.env
-ExecStart=/opt/autoace/repo/deploy/duckdns.sh
+EnvironmentFile=/etc/emotion_detection.env
+ExecStart=/opt/emotion_detection/repo/deploy/duckdns.sh
 ```
 
 `deploy/duckdns.timer`:
 
 ```ini
 [Unit]
-Description=Refresh the AutoAce DuckDNS record every 15 minutes
+Description=Refresh the Emotion Detection DuckDNS record every 15 minutes
 
 [Timer]
 OnBootSec=1min
@@ -3037,7 +3037,7 @@ WantedBy=timers.target
 
 ```bash
 #!/usr/bin/env bash
-# Provision an Oracle Cloud Always Free ARM instance for the AutoAce dashboard.
+# Provision an Oracle Cloud Always Free ARM instance for the Emotion Detection dashboard.
 #
 # Idempotent: safe to re-run after a code change or a failed attempt.
 #
@@ -3045,11 +3045,11 @@ WantedBy=timers.target
 # inside the box:
 #   1. VCN ingress rules allowing TCP 80 and 443.
 #   2. A reserved (not ephemeral) public IP.
-#   3. /etc/autoace.env populated - see the block printed at the end.
+#   3. /etc/emotion_detection.env populated - see the block printed at the end.
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/abdulsami123/emotion-detection.git}"
-ROOT=/opt/autoace
+ROOT=/opt/emotion_detection
 
 echo "==> apt packages"
 sudo apt-get update -qq
@@ -3107,23 +3107,23 @@ fi
 "${ROOT}/venv/bin/pip" install --quiet -r "${ROOT}/repo/requirements.txt"
 
 echo "==> systemd units"
-sudo cp "${ROOT}"/repo/deploy/autoace-web.service /etc/systemd/system/
-sudo cp "${ROOT}"/repo/deploy/autoace-worker.service /etc/systemd/system/
+sudo cp "${ROOT}"/repo/deploy/emotion_detection-web.service /etc/systemd/system/
+sudo cp "${ROOT}"/repo/deploy/emotion_detection-worker.service /etc/systemd/system/
 sudo cp "${ROOT}"/repo/deploy/duckdns.service /etc/systemd/system/
 sudo cp "${ROOT}"/repo/deploy/duckdns.timer /etc/systemd/system/
 sudo chmod +x "${ROOT}"/repo/deploy/duckdns.sh
 
-if [ ! -f /etc/autoace.env ]; then
+if [ ! -f /etc/emotion_detection.env ]; then
 	cat <<'ENVEOF'
 
-  /etc/autoace.env does not exist yet. Create it with mode 0600:
+  /etc/emotion_detection.env does not exist yet. Create it with mode 0600:
 
-    sudo install -m 600 /dev/null /etc/autoace.env
-    sudo tee /etc/autoace.env >/dev/null <<'EOF'
+    sudo install -m 600 /dev/null /etc/emotion_detection.env
+    sudo tee /etc/emotion_detection.env >/dev/null <<'EOF'
     OPENAI_API_KEY=sk-...
-    AUTOACE_USER=autoace
-    AUTOACE_PASSWORD=<choose a strong password>
-    AUTOACE_HOSTNAME=<subdomain>.duckdns.org
+    EMOTION_DETECTION_USER=emotion_detection
+    EMOTION_DETECTION_PASSWORD=<choose a strong password>
+    EMOTION_DETECTION_HOSTNAME=<subdomain>.duckdns.org
     DUCKDNS_DOMAIN=<subdomain>
     DUCKDNS_TOKEN=<token from duckdns.org>
     EOF
@@ -3135,15 +3135,15 @@ ENVEOF
 fi
 
 # shellcheck disable=SC1091
-set -a && . /etc/autoace.env && set +a
-: "${AUTOACE_HOSTNAME:?AUTOACE_HOSTNAME must be set in /etc/autoace.env}"
+set -a && . /etc/emotion_detection.env && set +a
+: "${EMOTION_DETECTION_HOSTNAME:?EMOTION_DETECTION_HOSTNAME must be set in /etc/emotion_detection.env}"
 
 echo "==> caddy config"
 sudo cp "${ROOT}/repo/deploy/Caddyfile" /etc/caddy/Caddyfile
 sudo mkdir -p /etc/systemd/system/caddy.service.d
 sudo tee /etc/systemd/system/caddy.service.d/override.conf >/dev/null <<EOF
 [Service]
-Environment=AUTOACE_HOSTNAME=${AUTOACE_HOSTNAME}
+Environment=EMOTION_DETECTION_HOSTNAME=${EMOTION_DETECTION_HOSTNAME}
 EOF
 
 echo "==> warm the model cache (~5 GiB, once)"
@@ -3156,12 +3156,12 @@ echo "==> warm the model cache (~5 GiB, once)"
 cd "${ROOT}/repo"
 sudo -u ubuntu env HF_HOME="${ROOT}/hf" "${ROOT}/venv/bin/python" - <<'PY'
 # asr and ser BOTH define _load_model, so these must be aliased.
-from autoace.asr import _load_model as load_whisper
-from autoace.diarize import _load_encoder
-from autoace.ser import _load_model as load_ser
-from autoace.tagging import _load_ast
-from autoace.tone_nli import _load_classifier
-from autoace.quality import _load_squim
+from emotion_detection.asr import _load_model as load_whisper
+from emotion_detection.diarize import _load_encoder
+from emotion_detection.ser import _load_model as load_ser
+from emotion_detection.tagging import _load_ast
+from emotion_detection.tone_nli import _load_classifier
+from emotion_detection.quality import _load_squim
 
 for label, loader in (
     ("faster-whisper large-v3-turbo", load_whisper),
@@ -3180,25 +3180,25 @@ echo "==> start everything"
 sudo systemctl daemon-reload
 sudo systemctl enable --now duckdns.timer
 sudo systemctl restart duckdns.service
-sudo systemctl enable --now autoace-worker.service
-sudo systemctl enable --now autoace-web.service
+sudo systemctl enable --now emotion_detection-worker.service
+sudo systemctl enable --now emotion_detection-web.service
 sudo systemctl enable --now caddy
 
 echo
-echo "Done. https://${AUTOACE_HOSTNAME}"
-echo "Logs:  journalctl -u autoace-worker -f"
+echo "Done. https://${EMOTION_DETECTION_HOSTNAME}"
+echo "Logs:  journalctl -u emotion_detection-worker -f"
 ```
 
 **The warm-up block calls private, `lru_cache`d loaders.** These names were read from the current source and are correct as written:
 
 | Module | Loader |
 |---|---|
-| `autoace/asr.py:54` | `_load_model` |
-| `autoace/diarize.py:43` | `_load_encoder` |
-| `autoace/ser.py:94` | `_load_model` (**same name as asr's — must be aliased**) |
-| `autoace/tagging.py:106` | `_load_ast` |
-| `autoace/tone_nli.py:45` | `_load_classifier` |
-| `autoace/quality.py:161` | `_load_squim` |
+| `emotion_detection/asr.py:54` | `_load_model` |
+| `emotion_detection/diarize.py:43` | `_load_encoder` |
+| `emotion_detection/ser.py:94` | `_load_model` (**same name as asr's — must be aliased**) |
+| `emotion_detection/tagging.py:106` | `_load_ast` |
+| `emotion_detection/tone_nli.py:45` | `_load_classifier` |
+| `emotion_detection/quality.py:161` | `_load_squim` |
 
 They are private, so if a future refactor renames one the warm-up breaks loudly at deploy time rather than silently — which is the right failure. Silero VAD is not warmed here: `vad.py` pulls it via `torch.hub.load` and it is ~2 MB, so the first call downloads it imperceptibly.
 
@@ -3223,17 +3223,17 @@ VCN ingress for TCP 80 and 443; a **reserved** public IP; a DuckDNS subdomain po
 - [ ] **Step 2: Run setup**
 
 ```bash
-git clone https://github.com/abdulsami123/emotion-detection.git /tmp/autoace-bootstrap
-bash /tmp/autoace-bootstrap/deploy/setup.sh
+git clone https://github.com/abdulsami123/emotion-detection.git /tmp/emotion_detection-bootstrap
+bash /tmp/emotion_detection-bootstrap/deploy/setup.sh
 ```
 
-Expected: it exits asking for `/etc/autoace.env` on the first run. Create the file, re-run.
+Expected: it exits asking for `/etc/emotion_detection.env` on the first run. Create the file, re-run.
 
 - [ ] **Step 3: Run the CI-safe suite on ARM**
 
 ```bash
-cd /opt/autoace/repo
-/opt/autoace/venv/bin/python -m pytest tests/test_jobs.py tests/test_app.py -v
+cd /opt/emotion_detection/repo
+/opt/emotion_detection/venv/bin/python -m pytest tests/test_jobs.py tests/test_app.py -v
 ```
 
 Expected: all pass. This is what confirms nothing depended on Python 3.13 — the VM runs 3.12.
@@ -3243,28 +3243,28 @@ Expected: all pass. This is what confirms nothing depended on Python 3.13 — th
 Spec §11.2 flags the 5.67 GiB figure as Windows-only. Measure the real thing:
 
 ```bash
-sudo systemctl stop autoace-worker
-/usr/bin/time -v /opt/autoace/venv/bin/python -c "
-from autoace.pipeline import analyse_file
-from autoace.config import reference_call
+sudo systemctl stop emotion_detection-worker
+/usr/bin/time -v /opt/emotion_detection/venv/bin/python -c "
+from emotion_detection.pipeline import analyse_file
+from emotion_detection.config import reference_call
 for n in ('call_001.ogg','call_002.ogg','call_003.ogg'):
     analyse_file(reference_call(n))
 " 2>&1 | grep -E 'Maximum resident|Elapsed'
-sudo systemctl start autoace-worker
+sudo systemctl start emotion_detection-worker
 ```
 
 `Maximum resident set size` is in kilobytes. Record it, and the elapsed time, in `docs/MEMO.md`. Requires `reference/` present on the VM — copy the audio up over `scp` and **do not commit it**.
 
 - [ ] **Step 5: Verify the service end to end**
 
-Open `https://<subdomain>.duckdns.org`, log in, upload a ZIP with one call plus a manifest. Confirm: a valid certificate, the job ID appears at once, the table updates on its own, the row completes, `results.csv` downloads, and the audio is gone from `/opt/autoace/data/uploads/`.
+Open `https://<subdomain>.duckdns.org`, log in, upload a ZIP with one call plus a manifest. Confirm: a valid certificate, the job ID appears at once, the table updates on its own, the row completes, `results.csv` downloads, and the audio is gone from `/opt/emotion_detection/data/uploads/`.
 
 - [ ] **Step 6: Verify interruption handling for real**
 
 ```bash
 # start a batch, then mid-file:
-sudo systemctl restart autoace-worker
-journalctl -u autoace-worker -n 20
+sudo systemctl restart emotion_detection-worker
+journalctl -u emotion_detection-worker -n 20
 ```
 
 Expected: a `startup reconcile: 1 requeued` warning, and the file is reprocessed rather than lost.
@@ -3293,12 +3293,12 @@ Two processes share a SQLite job store, because a 50-file batch takes ~87
 minutes and no HTTP request survives that:
 
 ```bash
-export AUTOACE_DATA_DIR=./_data
-python -m autoace.worker &                       # claims files, runs the pipeline
-AUTOACE_USER=autoace AUTOACE_PASSWORD=<password> python -m autoace.app
+export EMOTION_DETECTION_DATA_DIR=./_data
+python -m emotion_detection.worker &                       # claims files, runs the pipeline
+EMOTION_DETECTION_USER=emotion_detection EMOTION_DETECTION_PASSWORD=<password> python -m emotion_detection.app
 ```
 
-The web process binds `127.0.0.1:7860` by default (`AUTOACE_BIND=0.0.0.0` to
+The web process binds `127.0.0.1:7860` by default (`EMOTION_DETECTION_BIND=0.0.0.0` to
 change it) and refuses to start without a password. Upload a ZIP containing
 audio plus one CSV manifest; the batch is validated before any inference runs,
 one bad file cannot fail the batch, and results download as CSV and JSON with
@@ -3377,4 +3377,4 @@ Two of those were genuinely missing and are the reason T13 and T14 exist — see
 
 **Type consistency checked.** `ClaimedFile(job_id, name, audio_path, attempts)` and `JobStatus` are used with the same field names everywhere. `JobStatus` gains `manifest_csv` in Task 12, and both the dataclass and its construction site are updated in the same step. `complete(conn, claimed, result)` and `fail(conn, claimed, error)` take a `ClaimedFile`, not a `(job_id, name)` pair, consistently across `jobs.py` and `worker.py`.
 
-**Loader names verified, not assumed.** The Task 16 warm-up block calls six private `lru_cache`d loaders; all six names were read from the current source and are tabulated in that task. `autoace.asr._load_model` and `autoace.ser._load_model` collide, so the block aliases them — an earlier draft would have failed at deploy time with a silently shadowed import.
+**Loader names verified, not assumed.** The Task 16 warm-up block calls six private `lru_cache`d loaders; all six names were read from the current source and are tabulated in that task. `emotion_detection.asr._load_model` and `emotion_detection.ser._load_model` collide, so the block aliases them — an earlier draft would have failed at deploy time with a silently shadowed import.

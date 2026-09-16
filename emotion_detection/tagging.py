@@ -47,8 +47,8 @@ from functools import lru_cache
 import numpy as np
 import torch
 
-from autoace.config import AST_MODEL, SAMPLE_RATE
-from autoace.vad import Segment
+from emotion_detection.config import AST_MODEL, SAMPLE_RATE
+from emotion_detection.vad import Segment
 
 # AST's native input is 10.24s (1024 mel frames at 10ms). Shorter windows get
 # padded to that length, which wastes compute and shifts the input away from

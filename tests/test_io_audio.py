@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from autoace.config import LABELS_CSV, reference_call
-from autoace.io_audio import UnsupportedAudio, channel_layout, load_mono
+from emotion_detection.config import LABELS_CSV, reference_call
+from emotion_detection.io_audio import UnsupportedAudio, channel_layout, load_mono
 
 
 @pytest.mark.parametrize("name", ["call_001.ogg", "call_002.ogg", "call_003.ogg"])

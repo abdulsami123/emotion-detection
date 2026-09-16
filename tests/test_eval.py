@@ -1,7 +1,7 @@
 import pytest
 
-from autoace.config import LABELS_CSV
-from autoace.eval import BATCH_COLUMNS, load_manifest, score_batch
+from emotion_detection.config import LABELS_CSV
+from emotion_detection.eval import BATCH_COLUMNS, load_manifest, score_batch
 
 
 def test_load_manifest_reads_the_brief_format():

@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from autoace.config import reference_call
-from autoace.io_audio import load_mono
-from autoace.vad import Segment, concatenate, non_speech_segments, speech_segments
+from emotion_detection.config import reference_call
+from emotion_detection.io_audio import load_mono
+from emotion_detection.vad import Segment, concatenate, non_speech_segments, speech_segments
 
 
 @pytest.fixture(scope="module")

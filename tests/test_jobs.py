@@ -6,9 +6,9 @@ import sqlite3
 
 import pytest
 
-from autoace import jobs
-from autoace.pipeline import FileResult
-from autoace.schema import CallAnalysis
+from emotion_detection import jobs
+from emotion_detection.pipeline import FileResult
+from emotion_detection.schema import CallAnalysis
 
 
 @pytest.fixture
@@ -430,7 +430,7 @@ def test_reconcile_fails_a_row_past_max_attempts(conn, tmp_path):
     """The OOM crash-loop guard. If the fallback path pushes the worker past
     available RAM, the OOM killer takes it mid-file, reconcile requeues it, and
     it dies again on the same file - forever. MAX_ATTEMPTS breaks that."""
-    from autoace.config import MAX_ATTEMPTS
+    from emotion_detection.config import MAX_ATTEMPTS
 
     workdir, paths = _make_audio(tmp_path, "a.ogg")
     job_id = jobs.enqueue(
@@ -471,7 +471,7 @@ def test_reconcile_leaves_a_fresh_running_row_alone(conn, tmp_path):
 def test_reconcile_finalises_a_job_whose_last_file_it_failed(conn, tmp_path):
     """If reconcile is what exhausts the final file, it must still close the
     job - otherwise the job sits at `running` forever with nothing to run."""
-    from autoace.config import MAX_ATTEMPTS
+    from emotion_detection.config import MAX_ATTEMPTS
 
     workdir, paths = _make_audio(tmp_path, "a.ogg")
     job_id = jobs.enqueue(
@@ -542,7 +542,7 @@ def test_expire_removes_old_jobs_and_their_files(conn, tmp_path):
     must not leave confidential audio behind."""
     import time as _time
 
-    from autoace.config import JOB_TTL_SECONDS
+    from emotion_detection.config import JOB_TTL_SECONDS
 
     workdir, paths = _make_audio(tmp_path, "a.ogg")
     job_id = jobs.enqueue(
@@ -603,7 +603,7 @@ def test_job_status_reports_counts_and_queue_position(conn, tmp_path):
     # per deployment target (it went from 105.0 on an x86 dev box to 192.0 on the
     # Oracle ARM instance), and this test is about the arithmetic - two unfinished
     # files ahead of job B - not about the constant's current value.
-    from autoace.config import MEAN_SECONDS_PER_FILE
+    from emotion_detection.config import MEAN_SECONDS_PER_FILE
 
     assert status_b.eta_seconds == pytest.approx(MEAN_SECONDS_PER_FILE * 2, rel=0.01)
 

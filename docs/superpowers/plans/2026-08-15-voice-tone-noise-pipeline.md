@@ -15,7 +15,7 @@
 ## File Structure
 
 ```
-autoace/
+emotion_detection/
   __init__.py
   schema.py         # Pydantic models, enums — the output contract
   config.py         # EVERY threshold and model ID, one place
@@ -60,13 +60,13 @@ requirements.txt
 ## Task 1: Project scaffold, schema, and config
 
 **Files:**
-- Create: `requirements.txt`, `autoace/__init__.py`, `autoace/schema.py`, `autoace/config.py`
+- Create: `requirements.txt`, `emotion_detection/__init__.py`, `emotion_detection/schema.py`, `emotion_detection/config.py`
 - Test: `tests/test_schema.py`
 
 - [ ] **Step 1: Initialise the repository**
 
 ```bash
-cd C:/Users/samir/autoace-test
+cd C:/Users/samir/emotion_detection-test
 git init
 git add reference/ docs/
 git commit -m "chore: initial commit — brief, labels, design spec"
@@ -103,8 +103,8 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from autoace.config import LABELS_CSV
-from autoace.schema import CallAnalysis, EmotionalTone, EmotionalIntensity
+from emotion_detection.config import LABELS_CSV
+from emotion_detection.schema import CallAnalysis, EmotionalTone, EmotionalIntensity
 
 
 def test_valid_analysis_round_trips():
@@ -169,16 +169,16 @@ def test_every_labels_csv_row_validates():
 - [ ] **Step 4: Run the test to verify it fails**
 
 Run: `python -m pytest tests/test_schema.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'autoace'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'emotion_detection'`
 
-- [ ] **Step 5: Write `autoace/__init__.py`**
+- [ ] **Step 5: Write `emotion_detection/__init__.py`**
 
 ```python
-"""AutoAce voice tone and background noise analysis."""
+"""Emotion Detection voice tone and background noise analysis."""
 __version__ = "0.1.0"
 ```
 
-- [ ] **Step 6: Write `autoace/schema.py`**
+- [ ] **Step 6: Write `emotion_detection/schema.py`**
 
 ```python
 """The output contract. Enum values are fixed by the trial brief §2 and must
@@ -241,7 +241,7 @@ NEGATIVE_TONES = {
 }
 ```
 
-- [ ] **Step 7: Write `autoace/config.py`**
+- [ ] **Step 7: Write `emotion_detection/config.py`**
 
 ```python
 """Every threshold in the system. Nothing numeric belongs anywhere else.
@@ -385,7 +385,7 @@ Expected: 4 passed
 - [ ] **Step 9: Commit**
 
 ```bash
-git add requirements.txt autoace/ tests/test_schema.py
+git add requirements.txt emotion_detection/ tests/test_schema.py
 git commit -m "feat: output schema and threshold config"
 ```
 
@@ -394,7 +394,7 @@ git commit -m "feat: output schema and threshold config"
 ## Task 2: Acoustics baseline — pin spec §2.5 as a regression canary
 
 **Files:**
-- Create: `autoace/acoustics.py`
+- Create: `emotion_detection/acoustics.py`
 - Test: `tests/test_acoustics_baseline.py`
 
 This task reproduces the exact measurements in spec §2.5. Those numbers justify three
@@ -413,8 +413,8 @@ the spec's calibration argument no longer holds and must be re-derived."""
 
 import pytest
 
-from autoace.acoustics import baseline_characterisation
-from autoace.config import reference_call
+from emotion_detection.acoustics import baseline_characterisation
+from emotion_detection.config import reference_call
 
 # (file, snr_db, floor_dbfs, max_gap_s, clip_pct, hf_fraction)
 EXPECTED = [
@@ -437,7 +437,7 @@ def test_baseline_matches_spec_section_2_5(name, snr, floor, gap, clip, hf):
 def test_long_silence_threshold_exceeds_measured_gap():
     """call_003 has a 7.35s gap and is labelled long_silence_present=false,
     so the threshold must sit above it (spec §2.5 finding 2)."""
-    from autoace.config import LONG_SILENCE_SEC
+    from emotion_detection.config import LONG_SILENCE_SEC
     worst = max(baseline_characterisation(n)["max_nonspeech_gap_s"] for n, *_ in EXPECTED)
     assert LONG_SILENCE_SEC > worst
 
@@ -445,7 +445,7 @@ def test_long_silence_threshold_exceeds_measured_gap():
 def test_noise_floor_threshold_separates_the_labels():
     """The one no-noise call must fall below NOISE_FLOOR_PRESENT and both
     noisy calls above it (spec §7.2)."""
-    from autoace.config import NOISE_FLOOR_PRESENT
+    from emotion_detection.config import NOISE_FLOOR_PRESENT
     assert baseline_characterisation(reference_call("call_001.ogg"))["floor_dbfs"] < NOISE_FLOOR_PRESENT
     assert baseline_characterisation(reference_call("call_002.ogg"))["floor_dbfs"] > NOISE_FLOOR_PRESENT
     assert baseline_characterisation(reference_call("call_003.ogg"))["floor_dbfs"] > NOISE_FLOOR_PRESENT
@@ -454,9 +454,9 @@ def test_noise_floor_threshold_separates_the_labels():
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `python -m pytest tests/test_acoustics_baseline.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'autoace.acoustics'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'emotion_detection.acoustics'`
 
-- [ ] **Step 3: Write `autoace/acoustics.py`**
+- [ ] **Step 3: Write `emotion_detection/acoustics.py`**
 
 ```python
 """Shared DSP primitives. Used by both the tagging and quality modules so
@@ -467,7 +467,7 @@ from __future__ import annotations
 import librosa
 import numpy as np
 
-from autoace.config import SAMPLE_RATE
+from emotion_detection.config import SAMPLE_RATE
 
 _STFT_N_FFT = 512
 _STFT_HOP = 160          # 10 ms at 16 kHz
@@ -541,7 +541,7 @@ Expected: 5 passed
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/acoustics.py tests/test_acoustics_baseline.py
+git add emotion_detection/acoustics.py tests/test_acoustics_baseline.py
 git commit -m "test: pin spec 2.5 acoustics as regression canary"
 ```
 
@@ -550,7 +550,7 @@ git commit -m "test: pin spec 2.5 acoustics as regression canary"
 ## Task 3: Audio I/O with stereo detection
 
 **Files:**
-- Create: `autoace/io_audio.py`
+- Create: `emotion_detection/io_audio.py`
 - Test: `tests/test_io_audio.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -561,8 +561,8 @@ Create `tests/test_io_audio.py`:
 import numpy as np
 import pytest
 
-from autoace.config import LABELS_CSV, reference_call
-from autoace.io_audio import UnsupportedAudio, load_mono, channel_layout
+from emotion_detection.config import LABELS_CSV, reference_call
+from emotion_detection.io_audio import UnsupportedAudio, load_mono, channel_layout
 
 
 @pytest.mark.parametrize("name", ["call_001.ogg", "call_002.ogg", "call_003.ogg"])
@@ -592,9 +592,9 @@ def test_unsupported_file_raises():
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `python -m pytest tests/test_io_audio.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'autoace.io_audio'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'emotion_detection.io_audio'`
 
-- [ ] **Step 3: Write `autoace/io_audio.py`**
+- [ ] **Step 3: Write `emotion_detection/io_audio.py`**
 
 ```python
 """Decode to a canonical 16 kHz mono float32 signal.
@@ -614,7 +614,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 
-from autoace.config import SAMPLE_RATE, STEREO_SEPARATE_MAX_CORR
+from emotion_detection.config import SAMPLE_RATE, STEREO_SEPARATE_MAX_CORR
 
 SUPPORTED_SUFFIXES = {".ogg", ".wav", ".mp3", ".m4a", ".flac"}
 
@@ -664,7 +664,7 @@ Expected: 5 passed
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/io_audio.py tests/test_io_audio.py
+git add emotion_detection/io_audio.py tests/test_io_audio.py
 git commit -m "feat: audio decode with dual-leg stereo detection"
 ```
 
@@ -673,7 +673,7 @@ git commit -m "feat: audio decode with dual-leg stereo detection"
 ## Task 4: Silero VAD
 
 **Files:**
-- Create: `autoace/vad.py`
+- Create: `emotion_detection/vad.py`
 - Test: `tests/test_vad.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -683,9 +683,9 @@ Create `tests/test_vad.py`:
 ```python
 import pytest
 
-from autoace.config import reference_call
-from autoace.io_audio import load_mono
-from autoace.vad import Segment, non_speech_segments, speech_segments
+from emotion_detection.config import reference_call
+from emotion_detection.io_audio import load_mono
+from emotion_detection.vad import Segment, non_speech_segments, speech_segments
 
 
 @pytest.fixture(scope="module")
@@ -721,9 +721,9 @@ def test_non_speech_is_the_complement(call_001):
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `python -m pytest tests/test_vad.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'autoace.vad'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'emotion_detection.vad'`
 
-- [ ] **Step 3: Write `autoace/vad.py`**
+- [ ] **Step 3: Write `emotion_detection/vad.py`**
 
 ```python
 """Silero VAD. Its segmentation is shared across both branches: speech
@@ -738,7 +738,7 @@ from functools import lru_cache
 import numpy as np
 import torch
 
-from autoace.config import (
+from emotion_detection.config import (
     SAMPLE_RATE,
     VAD_MIN_SILENCE_MS,
     VAD_MIN_SPEECH_MS,
@@ -813,7 +813,7 @@ Expected: 3 passed (first run downloads the Silero model, ~1 MB)
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/vad.py tests/test_vad.py
+git add emotion_detection/vad.py tests/test_vad.py
 git commit -m "feat: Silero VAD with shared speech/non-speech segmentation"
 ```
 
@@ -822,7 +822,7 @@ git commit -m "feat: Silero VAD with shared speech/non-speech segmentation"
 ## Task 5: Speaker assignment
 
 **Files:**
-- Create: `autoace/diarize.py`
+- Create: `emotion_detection/diarize.py`
 - Test: `tests/test_diarize.py`
 
 Full pyannote diarization is the most expensive CPU stage. This exploits a domain fact instead:
@@ -835,10 +835,10 @@ Create `tests/test_diarize.py`:
 ```python
 import pytest
 
-from autoace.diarize import assign_speakers
-from autoace.config import reference_call
-from autoace.io_audio import load_mono
-from autoace.vad import speech_segments
+from emotion_detection.diarize import assign_speakers
+from emotion_detection.config import reference_call
+from emotion_detection.io_audio import load_mono
+from emotion_detection.vad import speech_segments
 
 
 @pytest.fixture(scope="module")
@@ -881,7 +881,7 @@ def test_single_speaker_audio_is_marked_degraded():
     """A clip with one speaker cannot be split into agent/customer; the
     pipeline must know so it can cap confidence (spec §4.3 step 5)."""
     import numpy as np
-    from autoace.vad import Segment
+    from emotion_detection.vad import Segment
     y, _ = load_mono(reference_call("call_002.ogg"))
     one_segment = [Segment(0.0, 1.0)]
     result = assign_speakers(y, one_segment)
@@ -891,9 +891,9 @@ def test_single_speaker_audio_is_marked_degraded():
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `python -m pytest tests/test_diarize.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'autoace.diarize'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'emotion_detection.diarize'`
 
-- [ ] **Step 3: Write `autoace/diarize.py`**
+- [ ] **Step 3: Write `emotion_detection/diarize.py`**
 
 ```python
 """Two-speaker assignment via ECAPA embeddings and agglomerative clustering.
@@ -913,13 +913,13 @@ import torch
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import silhouette_score
 
-from autoace.config import (
+from emotion_detection.config import (
     AGENT_REF_MIN_SIM,
     DIARIZATION_MIN_SILHOUETTE,
     ECAPA_MODEL,
     SAMPLE_RATE,
 )
-from autoace.vad import Segment
+from emotion_detection.vad import Segment
 
 _MIN_EMBED_SAMPLES = int(0.4 * SAMPLE_RATE)  # ECAPA needs ~0.4s to be stable
 
@@ -1043,7 +1043,7 @@ Expected: 5 passed (first run downloads ECAPA, ~80 MB)
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/diarize.py tests/test_diarize.py
+git add emotion_detection/diarize.py tests/test_diarize.py
 git commit -m "feat: two-speaker assignment via ECAPA clustering"
 ```
 
@@ -1052,7 +1052,7 @@ git commit -m "feat: two-speaker assignment via ECAPA clustering"
 ## Task 6: ASR with word timestamps and language ID
 
 **Files:**
-- Create: `autoace/asr.py`
+- Create: `emotion_detection/asr.py`
 - Test: `tests/test_asr.py`
 
 This task **regenerates the spec §2.3, §2.4 and §11 evidence** that no longer exists on disk
@@ -1065,8 +1065,8 @@ Create `tests/test_asr.py`:
 ```python
 import pytest
 
-from autoace.asr import transcribe
-from autoace.config import reference_call
+from emotion_detection.asr import transcribe
+from emotion_detection.config import reference_call
 
 
 @pytest.fixture(scope="module")
@@ -1108,9 +1108,9 @@ def test_segments_are_ordered(call_001_result):
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `python -m pytest tests/test_asr.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'autoace.asr'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'emotion_detection.asr'`
 
-- [ ] **Step 3: Write `autoace/asr.py`**
+- [ ] **Step 3: Write `emotion_detection/asr.py`**
 
 ```python
 """faster-whisper transcription.
@@ -1128,7 +1128,7 @@ from functools import lru_cache
 
 import torch
 
-from autoace.config import (
+from emotion_detection.config import (
     WHISPER_COMPUTE_CPU,
     WHISPER_COMPUTE_GPU,
     WHISPER_MODEL,
@@ -1213,8 +1213,8 @@ Run and save the output, which restores the spec §2.3 transcript excerpts and t
 ```bash
 python -c "
 import json, time
-from autoace.asr import transcribe
-from autoace.config import reference_call
+from emotion_detection.asr import transcribe
+from emotion_detection.config import reference_call
 out = {}
 for name in ['call_001.ogg','call_002.ogg','call_003.ogg']:
     t0 = time.time()
@@ -1229,7 +1229,7 @@ json.dump(out, open('tests/fixtures/asr_baseline.json','w'), indent=2, ensure_as
 - [ ] **Step 6: Commit**
 
 ```bash
-git add autoace/asr.py tests/test_asr.py tests/fixtures/asr_baseline.json
+git add emotion_detection/asr.py tests/test_asr.py tests/fixtures/asr_baseline.json
 git commit -m "feat: multilingual ASR with word timestamps, regenerate transcript evidence"
 ```
 
@@ -1238,7 +1238,7 @@ git commit -m "feat: multilingual ASR with word timestamps, regenerate transcrip
 ## Task 7: AudioSet tagging and spectral line-artifact classifier
 
 **Files:**
-- Create: `autoace/tagging.py`
+- Create: `emotion_detection/tagging.py`
 - Test: `tests/test_tagging.py`
 
 This task **regenerates the spec §7.1.1 bake-off**, whose numbers justify choosing AST over
@@ -1251,10 +1251,10 @@ Create `tests/test_tagging.py`:
 ```python
 import pytest
 
-from autoace.config import reference_call
-from autoace.io_audio import load_mono
-from autoace.tagging import classify_noise_type, spectral_artifact, tag_non_speech
-from autoace.vad import non_speech_segments
+from emotion_detection.config import reference_call
+from emotion_detection.io_audio import load_mono
+from emotion_detection.tagging import classify_noise_type, spectral_artifact, tag_non_speech
+from emotion_detection.vad import non_speech_segments
 
 
 def test_ast_identifies_television_on_call_002():
@@ -1296,9 +1296,9 @@ def test_relative_dominance_is_scale_free():
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `python -m pytest tests/test_tagging.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'autoace.tagging'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'emotion_detection.tagging'`
 
-- [ ] **Step 3: Write `autoace/tagging.py`**
+- [ ] **Step 3: Write `emotion_detection/tagging.py`**
 
 ```python
 """Noise typing, split along the physical boundary that matters.
@@ -1320,8 +1320,8 @@ import librosa
 import numpy as np
 import torch
 
-from autoace.acoustics import stft_magnitude
-from autoace.config import (
+from emotion_detection.acoustics import stft_magnitude
+from emotion_detection.config import (
     AST_MODEL,
     CRACKLE_MAX_MS,
     CRACKLE_MIN_COUNT,
@@ -1331,7 +1331,7 @@ from autoace.config import (
     STATIC_FLATNESS_MIN,
     TYPE_AST_MIN_DOM,
 )
-from autoace.vad import Segment, concatenate
+from emotion_detection.vad import Segment, concatenate
 
 _WINDOW_S = 1.0
 _HOP_S = 0.5
@@ -1494,7 +1494,7 @@ as a comment in `config.py` marked `MEASURED`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/tagging.py tests/test_tagging.py
+git add emotion_detection/tagging.py tests/test_tagging.py
 git commit -m "feat: AudioSet tagging plus spectral transmission-noise classifier"
 ```
 
@@ -1503,7 +1503,7 @@ git commit -m "feat: AudioSet tagging plus spectral transmission-noise classifie
 ## Task 8: Audio quality
 
 **Files:**
-- Create: `autoace/quality.py`
+- Create: `emotion_detection/quality.py`
 - Test: `tests/test_quality.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -1513,11 +1513,11 @@ Create `tests/test_quality.py`:
 ```python
 import pytest
 
-from autoace.config import reference_call
-from autoace.io_audio import load_mono
-from autoace.quality import assess_quality, noise_floor_dbfs
-from autoace.schema import AudioQuality
-from autoace.vad import non_speech_segments
+from emotion_detection.config import reference_call
+from emotion_detection.io_audio import load_mono
+from emotion_detection.quality import assess_quality, noise_floor_dbfs
+from emotion_detection.schema import AudioQuality
+from emotion_detection.vad import non_speech_segments
 
 
 @pytest.mark.parametrize("name", ["call_001.ogg", "call_002.ogg", "call_003.ogg"])
@@ -1570,9 +1570,9 @@ def test_production_floor_is_on_the_same_scale_as_the_calibration(name, expected
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `python -m pytest tests/test_quality.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'autoace.quality'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'emotion_detection.quality'`
 
-- [ ] **Step 3: Write `autoace/quality.py`**
+- [ ] **Step 3: Write `emotion_detection/quality.py`**
 
 ```python
 """Technical audio quality, measured independently of background noise.
@@ -1592,13 +1592,13 @@ import librosa
 import numpy as np
 import torch
 
-from autoace.acoustics import (
+from emotion_detection.acoustics import (
     clip_percentage,
     frame_db,
     high_frequency_fraction,
     stft_magnitude,
 )
-from autoace.config import (
+from emotion_detection.config import (
     CLIP_FRACTION_THRESHOLD,
     DROPOUT_MIN_MS,
     ECHO_LAG_RANGE_MS,
@@ -1609,8 +1609,8 @@ from autoace.config import (
     SQUIM_STOI_SEVERE,
     SQUIM_STOI_SLIGHT,
 )
-from autoace.schema import AudioQuality
-from autoace.vad import Segment, concatenate
+from emotion_detection.schema import AudioQuality
+from emotion_detection.vad import Segment, concatenate
 
 
 @dataclass
@@ -1738,7 +1738,7 @@ labels are `clear`, so a firing detector is a false positive by definition.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/quality.py tests/test_quality.py
+git add emotion_detection/quality.py tests/test_quality.py
 git commit -m "feat: audio quality assessment with telephony-baselined detectors"
 ```
 
@@ -1747,7 +1747,7 @@ git commit -m "feat: audio quality assessment with telephony-baselined detectors
 ## Task 9: Signal branch assembly
 
 **Files:**
-- Create: `autoace/signal_branch.py`
+- Create: `emotion_detection/signal_branch.py`
 - Test: `tests/test_signal_branch.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -1759,10 +1759,10 @@ import json
 
 import pytest
 
-from autoace.config import reference_call
-from autoace.io_audio import load_mono
-from autoace.schema import AudioQuality, NoiseSeverity
-from autoace.signal_branch import analyse_signal
+from emotion_detection.config import reference_call
+from emotion_detection.io_audio import load_mono
+from emotion_detection.schema import AudioQuality, NoiseSeverity
+from emotion_detection.signal_branch import analyse_signal
 
 EXPECTED = {
     "call_001.ogg": dict(present=False, severity=NoiseSeverity.NONE, silence=False),
@@ -1799,9 +1799,9 @@ def test_type_is_populated_when_noise_present():
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `python -m pytest tests/test_signal_branch.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'autoace.signal_branch'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'emotion_detection.signal_branch'`
 
-- [ ] **Step 3: Write `autoace/signal_branch.py`**
+- [ ] **Step 3: Write `emotion_detection/signal_branch.py`**
 
 ```python
 """Assembles the six signal fields from raw audio.
@@ -1817,8 +1817,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from autoace.acoustics import frame_db, longest_run_seconds, stft_magnitude
-from autoace.config import (
+from emotion_detection.acoustics import frame_db, longest_run_seconds, stft_magnitude
+from emotion_detection.config import (
     LONG_SILENCE_SEC,
     NOISE_FLOOR_PRESENT,
     NOISE_SEVERITY_BANDS,
@@ -1827,10 +1827,10 @@ from autoace.config import (
     SAMPLE_RATE,
     TAG_MIN_DOM,
 )
-from autoace.quality import assess_quality, noise_floor_dbfs, speech_level_dbfs
-from autoace.schema import AudioQuality, NoiseSeverity
-from autoace.tagging import classify_noise_type, spectral_artifact, tag_non_speech
-from autoace.vad import Segment, non_speech_segments, speech_segments
+from emotion_detection.quality import assess_quality, noise_floor_dbfs, speech_level_dbfs
+from emotion_detection.schema import AudioQuality, NoiseSeverity
+from emotion_detection.tagging import classify_noise_type, spectral_artifact, tag_non_speech
+from emotion_detection.vad import Segment, non_speech_segments, speech_segments
 
 
 @dataclass
@@ -1936,7 +1936,7 @@ Expected: 8 passed
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/signal_branch.py tests/test_signal_branch.py
+git add emotion_detection/signal_branch.py tests/test_signal_branch.py
 git commit -m "feat: signal branch assembling six deterministic fields"
 ```
 
@@ -1945,7 +1945,7 @@ git commit -m "feat: signal branch assembling six deterministic fields"
 ## Task 10: Prosody, activation, and trajectory
 
 **Files:**
-- Create: `autoace/prosody.py`
+- Create: `emotion_detection/prosody.py`
 - Test: `tests/test_prosody.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -1956,7 +1956,7 @@ Create `tests/test_prosody.py`:
 import numpy as np
 import pytest
 
-from autoace.prosody import Tier, activation_profile, discretise, select_tier
+from emotion_detection.prosody import Tier, activation_profile, discretise, select_tier
 
 
 def test_tier_selection_from_customer_speech_duration():
@@ -1992,9 +1992,9 @@ def test_flat_trajectory_is_not_rising():
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `python -m pytest tests/test_prosody.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'autoace.prosody'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'emotion_detection.prosody'`
 
-- [ ] **Step 3: Write `autoace/prosody.py`**
+- [ ] **Step 3: Write `emotion_detection/prosody.py`**
 
 ```python
 """eGeMAPS extraction, per-speaker normalization, and activation scoring.
@@ -2014,14 +2014,14 @@ from functools import lru_cache
 
 import numpy as np
 
-from autoace.config import (
+from emotion_detection.config import (
     ACTIVATION_WEIGHTS,
     BASELINE_WINDOW_S,
     SAMPLE_RATE,
     TIER_A_MIN_SPEECH_S,
     TIER_C_MAX_SPEECH_S,
 )
-from autoace.vad import Segment
+from emotion_detection.vad import Segment
 
 
 class Tier(str, Enum):
@@ -2168,7 +2168,7 @@ Expected: 5 passed
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/prosody.py tests/test_prosody.py
+git add emotion_detection/prosody.py tests/test_prosody.py
 git commit -m "feat: eGeMAPS prosody with speaker-relative activation scoring"
 ```
 
@@ -2177,7 +2177,7 @@ git commit -m "feat: eGeMAPS prosody with speaker-relative activation scoring"
 ## Task 11: Dimensional SER
 
 **Files:**
-- Create: `autoace/ser.py`
+- Create: `emotion_detection/ser.py`
 - Test: `tests/test_ser.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -2187,9 +2187,9 @@ Create `tests/test_ser.py`:
 ```python
 import pytest
 
-from autoace.config import reference_call
-from autoace.io_audio import load_mono
-from autoace.ser import predict_dimensions
+from emotion_detection.config import reference_call
+from emotion_detection.io_audio import load_mono
+from emotion_detection.ser import predict_dimensions
 
 
 @pytest.mark.parametrize("name", ["call_001.ogg", "call_002.ogg", "call_003.ogg"])
@@ -2211,9 +2211,9 @@ def test_dimensions_are_not_all_identical():
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `python -m pytest tests/test_ser.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'autoace.ser'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'emotion_detection.ser'`
 
-- [ ] **Step 3: Write `autoace/ser.py`**
+- [ ] **Step 3: Write `emotion_detection/ser.py`**
 
 ```python
 """Dimensional speech emotion recognition.
@@ -2235,7 +2235,7 @@ from functools import lru_cache
 import numpy as np
 import torch
 
-from autoace.config import SAMPLE_RATE, SER_MODEL
+from emotion_detection.config import SAMPLE_RATE, SER_MODEL
 
 
 @dataclass(frozen=True)
@@ -2283,7 +2283,7 @@ Expected: 4 passed (first run downloads the model, ~1.2 GB)
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/ser.py tests/test_ser.py
+git add emotion_detection/ser.py tests/test_ser.py
 git commit -m "feat: dimensional SER via MSP-Podcast arousal/dominance/valence"
 ```
 
@@ -2292,7 +2292,7 @@ git commit -m "feat: dimensional SER via MSP-Podcast arousal/dominance/valence"
 ## Task 12: Tone classification — Haiku and the NLI second approach
 
 **Files:**
-- Create: `autoace/tone_llm.py`, `autoace/tone_nli.py`
+- Create: `emotion_detection/tone_llm.py`, `emotion_detection/tone_nli.py`
 - Test: `tests/test_tone.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -2302,9 +2302,9 @@ Create `tests/test_tone.py`:
 ```python
 import pytest
 
-from autoace.schema import EmotionalTone
-from autoace.tone_llm import ToneRequest, build_prompt, parse_response
-from autoace.tone_nli import classify_tone_nli
+from emotion_detection.schema import EmotionalTone
+from emotion_detection.tone_llm import ToneRequest, build_prompt, parse_response
+from emotion_detection.tone_nli import classify_tone_nli
 
 
 def test_prompt_contains_verbatim_label_definitions():
@@ -2376,15 +2376,15 @@ def test_nli_returns_a_distribution_over_all_five_tones():
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `python -m pytest tests/test_tone.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'autoace.tone_llm'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'emotion_detection.tone_llm'`
 
-- [ ] **Step 3: Write `autoace/tone_llm.py`**
+- [ ] **Step 3: Write `emotion_detection/tone_llm.py`**
 
 ```python
 """Tone classification via Claude Haiku 4.5 with structured outputs.
 
 The model never hears the audio, so the feature description IS the tone
-signal. Privacy: transcripts and derived features leave AutoAce
+signal. Privacy: transcripts and derived features leave Emotion Detection
 infrastructure; audio does not. Disclosed per the brief §11.
 """
 
@@ -2393,8 +2393,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from autoace.config import LLM_MODEL, LLM_TEMPERATURE
-from autoace.schema import EmotionalIntensity, EmotionalTone
+from emotion_detection.config import LLM_MODEL, LLM_TEMPERATURE
+from emotion_detection.schema import EmotionalIntensity, EmotionalTone
 
 # Verbatim from the brief §2. Do not paraphrase — these definitions are the
 # classifier specification.
@@ -2413,7 +2413,7 @@ emotional_intensity (one of: low, medium, high)
 """
 
 SYSTEM_PROMPT = f"""\
-You are an expert call-audio analyst for AutoAce. You score calls between an AI
+You are an expert call-audio analyst for Emotion Detection. You score calls between an AI
 voice agent and a human caller. Classify the HUMAN CALLER's emotion only —
 ignore the agent's tone entirely.
 
@@ -2594,7 +2594,7 @@ def classify_tone(request: ToneRequest) -> ToneResponse:
     return parse_response(text)
 ```
 
-- [ ] **Step 4: Write `autoace/tone_nli.py`**
+- [ ] **Step 4: Write `emotion_detection/tone_nli.py`**
 
 ```python
 """Zero-shot tone classification via NLI entailment.
@@ -2608,8 +2608,8 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from autoace.config import NLI_MODEL
-from autoace.schema import EmotionalTone
+from emotion_detection.config import NLI_MODEL
+from emotion_detection.schema import EmotionalTone
 
 HYPOTHESES = {
     EmotionalTone.NEUTRAL: "The customer expresses no clear positive or negative emotion.",
@@ -2656,7 +2656,7 @@ Expected: 6 passed (the NLI test downloads bart-large-mnli, ~1.6 GB; no API key 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add autoace/tone_llm.py autoace/tone_nli.py tests/test_tone.py
+git add emotion_detection/tone_llm.py emotion_detection/tone_nli.py tests/test_tone.py
 git commit -m "feat: Haiku tone classifier and local NLI second approach"
 ```
 
@@ -2665,7 +2665,7 @@ git commit -m "feat: Haiku tone classifier and local NLI second approach"
 ## Task 13: Fusion — intensity rule, confidence, and assembly
 
 **Files:**
-- Create: `autoace/fuse.py`
+- Create: `emotion_detection/fuse.py`
 - Test: `tests/test_fuse.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -2675,17 +2675,17 @@ Create `tests/test_fuse.py`:
 ```python
 import pytest
 
-from autoace.config import TIER_C_MAX_CONF
-from autoace.fuse import (
+from emotion_detection.config import TIER_C_MAX_CONF
+from emotion_detection.fuse import (
     ConfidenceInputs,
     coherence_conflict,
     compute_confidence,
     intensity_from_activation,
     reconcile_intensity,
 )
-from autoace.prosody import ActivationProfile, Tier
-from autoace.schema import EmotionalIntensity, EmotionalTone
-from autoace.ser import Dimensions
+from emotion_detection.prosody import ActivationProfile, Tier
+from emotion_detection.schema import EmotionalIntensity, EmotionalTone
+from emotion_detection.ser import Dimensions
 
 
 def test_high_requires_level_and_escalation():
@@ -2778,9 +2778,9 @@ def test_confidence_stays_within_bounds():
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `python -m pytest tests/test_fuse.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'autoace.fuse'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'emotion_detection.fuse'`
 
-- [ ] **Step 3: Write `autoace/fuse.py`**
+- [ ] **Step 3: Write `emotion_detection/fuse.py`**
 
 ```python
 """Intensity mapping, voter reconciliation, and confidence.
@@ -2796,7 +2796,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from autoace.config import (
+from emotion_detection.config import (
     ACTIVATION_HIGH_Z,
     ACTIVATION_LOW_Z,
     ACTIVATION_PEAK_Z,
@@ -2820,14 +2820,14 @@ from autoace.config import (
     VALENCE_POS_MIN,
     ASR_MIN_LOGPROB,
 )
-from autoace.prosody import ActivationProfile, Tier
-from autoace.schema import (
+from emotion_detection.prosody import ActivationProfile, Tier
+from emotion_detection.schema import (
     NEGATIVE_TONES,
     POSITIVE_TONES,
     EmotionalIntensity,
     EmotionalTone,
 )
-from autoace.ser import Dimensions
+from emotion_detection.ser import Dimensions
 
 
 @dataclass
@@ -2918,7 +2918,7 @@ Expected: 11 passed
 - [ ] **Step 5: Commit**
 
 ```bash
-git add autoace/fuse.py tests/test_fuse.py
+git add emotion_detection/fuse.py tests/test_fuse.py
 git commit -m "feat: intensity reconciliation and agreement-based confidence"
 ```
 
@@ -2927,7 +2927,7 @@ git commit -m "feat: intensity reconciliation and agreement-based confidence"
 ## Task 14: Pipeline orchestration and evaluation harness
 
 **Files:**
-- Create: `autoace/pipeline.py`, `autoace/eval.py`
+- Create: `emotion_detection/pipeline.py`, `emotion_detection/eval.py`
 - Test: `tests/test_pipeline.py`, `tests/test_eval.py`
 
 - [ ] **Step 1: Write the failing tests**
@@ -2937,9 +2937,9 @@ Create `tests/test_eval.py`:
 ```python
 import json
 
-from autoace.config import LABELS_CSV
-from autoace.eval import BATCH_COLUMNS, load_manifest, score_batch
-from autoace.schema import CallAnalysis
+from emotion_detection.config import LABELS_CSV
+from emotion_detection.eval import BATCH_COLUMNS, load_manifest, score_batch
+from emotion_detection.schema import CallAnalysis
 
 
 def test_load_manifest_reads_the_brief_format():
@@ -2975,9 +2975,9 @@ Create `tests/test_pipeline.py`:
 ```python
 import pytest
 
-from autoace.config import LABELS_CSV, reference_call
-from autoace.pipeline import analyse_file
-from autoace.schema import CallAnalysis
+from emotion_detection.config import LABELS_CSV, reference_call
+from emotion_detection.pipeline import analyse_file
+from emotion_detection.schema import CallAnalysis
 
 
 def test_returns_a_valid_schema_object_without_an_api_key(monkeypatch):
@@ -2999,9 +2999,9 @@ def test_malformed_file_returns_an_error_not_an_exception():
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `python -m pytest tests/test_eval.py tests/test_pipeline.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'autoace.eval'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'emotion_detection.eval'`
 
-- [ ] **Step 3: Write `autoace/eval.py`**
+- [ ] **Step 3: Write `emotion_detection/eval.py`**
 
 ```python
 """Evaluation harness reading the brief's manifest format."""
@@ -3013,7 +3013,7 @@ import json
 from collections import Counter
 from dataclasses import dataclass
 
-from autoace.schema import CallAnalysis
+from emotion_detection.schema import CallAnalysis
 
 BATCH_COLUMNS = ("name", "result_json")
 
@@ -3118,7 +3118,7 @@ def score_batch(
     }
 ```
 
-- [ ] **Step 4: Write `autoace/pipeline.py`**
+- [ ] **Step 4: Write `emotion_detection/pipeline.py`**
 
 ```python
 """Per-file orchestration with fail isolation.
@@ -3132,16 +3132,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from autoace.diarize import assign_speakers
-from autoace.fuse import (
+from emotion_detection.diarize import assign_speakers
+from emotion_detection.fuse import (
     ConfidenceInputs,
     coherence_conflict,
     compute_confidence,
     intensity_from_activation,
     reconcile_intensity,
 )
-from autoace.io_audio import UnsupportedAudio, load_mono
-from autoace.prosody import (
+from emotion_detection.io_audio import UnsupportedAudio, load_mono
+from emotion_detection.prosody import (
     ActivationProfile,
     Tier,
     baseline_statistics,
@@ -3151,10 +3151,10 @@ from autoace.prosody import (
     select_tier,
     z_score,
 )
-from autoace.schema import CallAnalysis, EmotionalIntensity, EmotionalTone
-from autoace.ser import predict_dimensions
-from autoace.signal_branch import analyse_signal
-from autoace.vad import speech_segments
+from emotion_detection.schema import CallAnalysis, EmotionalIntensity, EmotionalTone
+from emotion_detection.ser import predict_dimensions
+from emotion_detection.signal_branch import analyse_signal
+from emotion_detection.vad import speech_segments
 
 
 @dataclass
@@ -3190,7 +3190,7 @@ def analyse_file(path: str) -> FileResult:
         long_silence_present=signal.long_silence_present,
         confidence=confidence,
     )
-    from autoace.config import REVIEW_THRESHOLD
+    from emotion_detection.config import REVIEW_THRESHOLD
 
     return FileResult(
         name=path,
@@ -3215,9 +3215,9 @@ def _tone_branch(y, path: str):
     rule_intensity = intensity_from_activation(profile)
 
     try:
-        from autoace.asr import transcribe
-from autoace.config import reference_call
-        from autoace.tone_llm import ToneRequest, classify_tone
+        from emotion_detection.asr import transcribe
+from emotion_detection.config import reference_call
+        from emotion_detection.tone_llm import ToneRequest, classify_tone
 
         transcript = transcribe(path)
         annotated = _annotate(y, customer, transcript)
@@ -3279,7 +3279,7 @@ def _activation(y, segments, tier: Tier) -> ActivationProfile:
         ]
     else:
         per_third = scores
-    from autoace.prosody import activation_profile
+    from emotion_detection.prosody import activation_profile
 
     return activation_profile(per_third)
 
@@ -3332,7 +3332,7 @@ Expected: 6 passed
 - [ ] **Step 6: Commit**
 
 ```bash
-git add autoace/pipeline.py autoace/eval.py tests/test_eval.py tests/test_pipeline.py
+git add emotion_detection/pipeline.py emotion_detection/eval.py tests/test_eval.py tests/test_pipeline.py
 git commit -m "feat: pipeline orchestration with fail isolation and eval harness"
 ```
 
@@ -3341,7 +3341,7 @@ git commit -m "feat: pipeline orchestration with fail isolation and eval harness
 ## Task 15: Gradio dashboard
 
 **Files:**
-- Create: `autoace/app.py`
+- Create: `emotion_detection/app.py`
 - Test: `tests/test_app.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -3355,7 +3355,7 @@ from pathlib import Path
 
 import pytest
 
-from autoace.app import BatchValidation, results_to_csv, validate_batch
+from emotion_detection.app import BatchValidation, results_to_csv, validate_batch
 
 
 def test_validation_reports_unmatched_files(tmp_path: Path):
@@ -3380,8 +3380,8 @@ def test_validation_reports_audio_without_a_manifest_row(tmp_path: Path):
 
 
 def test_csv_export_preserves_original_filenames():
-    from autoace.pipeline import FileResult
-    from autoace.schema import CallAnalysis
+    from emotion_detection.pipeline import FileResult
+    from emotion_detection.schema import CallAnalysis
 
     analysis = CallAnalysis(
         emotional_tone="neutral", emotional_intensity="medium",
@@ -3398,9 +3398,9 @@ def test_csv_export_preserves_original_filenames():
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `python -m pytest tests/test_app.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'autoace.app'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'emotion_detection.app'`
 
-- [ ] **Step 3: Write `autoace/app.py`**
+- [ ] **Step 3: Write `emotion_detection/app.py`**
 
 ```python
 """Hosted dashboard. Worth 10% of the grade — treat as a first-class deliverable.
@@ -3422,10 +3422,10 @@ from pathlib import Path
 
 import gradio as gr
 
-from autoace.config import REVIEW_THRESHOLD
-from autoace.eval import load_manifest, score_batch
-from autoace.io_audio import SUPPORTED_SUFFIXES
-from autoace.pipeline import FileResult, analyse_file
+from emotion_detection.config import REVIEW_THRESHOLD
+from emotion_detection.eval import load_manifest, score_batch
+from emotion_detection.io_audio import SUPPORTED_SUFFIXES
+from emotion_detection.pipeline import FileResult, analyse_file
 
 SCHEMA_COLUMNS = [
     "name", "emotional_tone", "emotional_intensity", "background_noise_present",
@@ -3508,7 +3508,7 @@ def _extract(upload: str, workdir: Path) -> Path:
 
 
 def run_batch(upload, progress=gr.Progress()):
-    workdir = Path(os.environ.get("AUTOACE_WORKDIR", "./_batches"))
+    workdir = Path(os.environ.get("EMOTION_DETECTION_WORKDIR", "./_batches"))
     workdir.mkdir(exist_ok=True)
     folder = _extract(upload, workdir)
 
@@ -3566,9 +3566,9 @@ def run_batch(upload, progress=gr.Progress()):
 
 
 def build_app() -> gr.Blocks:
-    with gr.Blocks(title="AutoAce — Voice Tone & Background Noise") as demo:
+    with gr.Blocks(title="Emotion Detection — Voice Tone & Background Noise") as demo:
         gr.Markdown(
-            "## AutoAce — Voice Tone & Background Noise\n"
+            "## Emotion Detection — Voice Tone & Background Noise\n"
             "Upload a ZIP containing audio files at the root plus a CSV manifest "
             "(`name`, `result_json`). Rows flagged **REVIEW** have confidence below "
             f"{REVIEW_THRESHOLD} or conflicting evidence."
@@ -3591,10 +3591,10 @@ def build_app() -> gr.Blocks:
 
 
 if __name__ == "__main__":
-    user = os.environ.get("AUTOACE_USER", "autoace")
-    password = os.environ.get("AUTOACE_PASSWORD")
+    user = os.environ.get("EMOTION_DETECTION_USER", "emotion_detection")
+    password = os.environ.get("EMOTION_DETECTION_PASSWORD")
     if not password:
-        raise SystemExit("Set AUTOACE_PASSWORD before starting the dashboard.")
+        raise SystemExit("Set EMOTION_DETECTION_PASSWORD before starting the dashboard.")
     build_app().launch(
         server_name="0.0.0.0",
         server_port=int(os.environ.get("PORT", "7860")),
@@ -3610,7 +3610,7 @@ Expected: 3 passed
 - [ ] **Step 5: Verify the dashboard starts**
 
 ```bash
-AUTOACE_PASSWORD=testpw python -m autoace.app
+EMOTION_DETECTION_PASSWORD=testpw python -m emotion_detection.app
 ```
 Expected: Gradio prints `Running on local URL: http://0.0.0.0:7860`. Open it, confirm the login
 prompt appears, then stop with Ctrl-C.
@@ -3618,7 +3618,7 @@ prompt appears, then stop with Ctrl-C.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add autoace/app.py tests/test_app.py
+git add emotion_detection/app.py tests/test_app.py
 git commit -m "feat: Gradio dashboard with validation, review queue, and exports"
 ```
 
@@ -3637,9 +3637,9 @@ Create `tests/test_end_to_end.py`:
 ```python
 import pytest
 
-from autoace.config import LABELS_CSV, reference_call
-from autoace.eval import load_manifest, score_batch
-from autoace.pipeline import analyse_file
+from emotion_detection.config import LABELS_CSV, reference_call
+from emotion_detection.eval import load_manifest, score_batch
+from emotion_detection.pipeline import analyse_file
 
 
 @pytest.mark.slow
@@ -3674,8 +3674,8 @@ into a training set and inflates the reported figure. Record the result as-is.
 ```bash
 python -c "
 import time, json, librosa
-from autoace.pipeline import analyse_file
-from autoace.config import reference_call
+from emotion_detection.pipeline import analyse_file
+from emotion_detection.config import reference_call
 rows = []
 for n in ['call_001.ogg','call_002.ogg','call_003.ogg']:
     path = reference_call(n)
@@ -3704,13 +3704,13 @@ asks for, and must state these four things explicitly:
    branch and the TV-speech overlap ambiguity.
 
 Also disclose, per brief §11: model `claude-haiku-4-5`, pricing $1/$5 per MTok, zero-retention
-configured, and that **transcripts and derived features leave AutoAce infrastructure while audio
+configured, and that **transcripts and derived features leave Emotion Detection infrastructure while audio
 does not**.
 
 - [ ] **Step 5: Write `README.md`**
 
 ```markdown
-# AutoAce — Voice Tone & Background Noise
+# Emotion Detection — Voice Tone & Background Noise
 
 Setup, run, and deploy instructions.
 
@@ -3725,17 +3725,17 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ## Analyse one file
 
 ```bash
-python -c "from autoace.pipeline import analyse_file; from autoace.config import reference_call; print(analyse_file(reference_call('call_001.ogg')).analysis.model_dump_json(indent=2))"
+python -c "from emotion_detection.pipeline import analyse_file; from emotion_detection.config import reference_call; print(analyse_file(reference_call('call_001.ogg')).analysis.model_dump_json(indent=2))"
 ```
 
 ## Score a labelled batch
 
 ```bash
 python -c "
-from autoace.config import LABELS_CSV, reference_call
-from autoace.eval import load_manifest, score_batch
-from autoace.pipeline import analyse_file
-from autoace.config import LABELS_CSV, reference_call
+from emotion_detection.config import LABELS_CSV, reference_call
+from emotion_detection.eval import load_manifest, score_batch
+from emotion_detection.pipeline import analyse_file
+from emotion_detection.config import LABELS_CSV, reference_call
 import json
 rows = load_manifest(str(LABELS_CSV))
 preds = {r.name: analyse_file(reference_call(r.name)).analysis for r in rows}
@@ -3746,7 +3746,7 @@ print(json.dumps(score_batch(rows, preds), indent=2, default=str))
 ## Run the dashboard
 
 ```bash
-AUTOACE_USER=autoace AUTOACE_PASSWORD=<password> python -m autoace.app
+EMOTION_DETECTION_USER=emotion_detection EMOTION_DETECTION_PASSWORD=<password> python -m emotion_detection.app
 ```
 
 ## Tests
@@ -3756,7 +3756,7 @@ python -m pytest -v                      # all
 python -m pytest -m "not slow" -v        # skip the end-to-end run
 ```
 
-Every threshold lives in `autoace/config.py`, annotated MEASURED / DERIVED / UNFITTED.
+Every threshold lives in `emotion_detection/config.py`, annotated MEASURED / DERIVED / UNFITTED.
 ```
 
 - [ ] **Step 6: Commit**

@@ -1,9 +1,9 @@
 import pytest
 
-from autoace.config import reference_call
-from autoace.io_audio import load_mono
-from autoace.schema import AudioQuality, NoiseSeverity
-from autoace.signal_branch import analyse_signal
+from emotion_detection.config import reference_call
+from emotion_detection.io_audio import load_mono
+from emotion_detection.schema import AudioQuality, NoiseSeverity
+from emotion_detection.signal_branch import analyse_signal
 
 CALLS = ("call_001.ogg", "call_002.ogg", "call_003.ogg")
 

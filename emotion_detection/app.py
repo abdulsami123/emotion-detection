@@ -35,18 +35,18 @@ from pathlib import Path
 
 import gradio as gr
 
-from autoace import jobs
-from autoace.config import (
+from emotion_detection import jobs
+from emotion_detection.config import (
     DATA_DIR,
     EXPORTS_DIR,
     MAX_UPLOAD_MB,
     REVIEW_THRESHOLD,
     UI_POLL_SECONDS,
 )
-from autoace.eval import load_manifest, score_batch
-from autoace.io_audio import SUPPORTED_SUFFIXES
-from autoace.pipeline import FileResult, analyse_file
-from autoace.schema import CallAnalysis
+from emotion_detection.eval import load_manifest, score_batch
+from emotion_detection.io_audio import SUPPORTED_SUFFIXES
+from emotion_detection.pipeline import FileResult, analyse_file
+from emotion_detection.schema import CallAnalysis
 
 # "name" first, then the nine schema fields, in schema declaration order.
 SCHEMA_COLUMNS = ("name",) + tuple(CallAnalysis.model_fields.keys())
@@ -281,7 +281,7 @@ def _prepare_workdir(upload) -> Path:
     folder path, or a list of individual file paths from a multi-file/
     folder picker) into one directory holding the batch."""
     if isinstance(upload, (list, tuple)):
-        workdir = Path(tempfile.mkdtemp(prefix="autoace_batch_"))
+        workdir = Path(tempfile.mkdtemp(prefix="emotion_detection_batch_"))
         for item in upload:
             src = _resolve_path(item)
             dest = workdir / src.name
@@ -307,7 +307,7 @@ def _prepare_workdir(upload) -> Path:
     if path.is_dir():
         return path
     if path.suffix.lower() == ".zip":
-        workdir = Path(tempfile.mkdtemp(prefix="autoace_batch_"))
+        workdir = Path(tempfile.mkdtemp(prefix="emotion_detection_batch_"))
         _extract_zip(path, workdir)
         return workdir
     # A single non-zip file (e.g. one CSV dropped alone): its parent
@@ -562,7 +562,7 @@ def poll_job(job_id: str):
         # load_manifest reads a path, and the original manifest went away with
         # the workdir - so round-trip the persisted text through a temp file
         # rather than duplicating the CSV parsing here.
-        manifest_dir = Path(tempfile.mkdtemp(prefix="autoace_manifest_"))
+        manifest_dir = Path(tempfile.mkdtemp(prefix="emotion_detection_manifest_"))
         manifest_file = manifest_dir / "manifest.csv"
         manifest_file.write_text(status.manifest_csv, encoding="utf-8")
         try:
@@ -587,9 +587,9 @@ def build_app() -> gr.Blocks:
     job store. Closing the tab stops the timer but not the worker, which is
     why the job-ID box exists.
     """
-    with gr.Blocks(title="AutoAce - Call Tone Review") as demo:
+    with gr.Blocks(title="Emotion Detection - Call Tone Review") as demo:
         gr.Markdown(
-            "# AutoAce batch review\n"
+            "# Emotion Detection batch review\n"
             "Upload a folder or ZIP containing audio files. A CSV manifest "
             "(`name,result_json`) is optional - include one to cross-check "
             "filenames and get scoring metrics when `result_json` is "
@@ -663,11 +663,11 @@ def build_app() -> gr.Blocks:
 
 
 if __name__ == "__main__":
-    user = os.environ.get("AUTOACE_USER", "admin")
-    password = os.environ.get("AUTOACE_PASSWORD")
+    user = os.environ.get("EMOTION_DETECTION_USER", "admin")
+    password = os.environ.get("EMOTION_DETECTION_PASSWORD")
     if not password:
         raise SystemExit(
-            "AUTOACE_PASSWORD must be set in the environment - refusing to "
+            "EMOTION_DETECTION_PASSWORD must be set in the environment - refusing to "
             "start a hosted dashboard with no login credential."
         )
 
@@ -676,7 +676,7 @@ if __name__ == "__main__":
         # 127.0.0.1, not 0.0.0.0: Caddy terminates TLS on the VM and is the
         # only listener reachable from off-box, so a wrong firewall rule
         # cannot expose the app over plaintext HTTP.
-        server_name=os.environ.get("AUTOACE_BIND", "127.0.0.1"),
+        server_name=os.environ.get("EMOTION_DETECTION_BIND", "127.0.0.1"),
         server_port=int(os.environ.get("PORT", "7860")),
         auth=(user, password),
         max_file_size=f"{MAX_UPLOAD_MB}mb",

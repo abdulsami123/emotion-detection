@@ -1,8 +1,8 @@
 import pytest
 
-from autoace.config import LABELS_CSV, reference_call
-from autoace.pipeline import analyse_file
-from autoace.schema import CallAnalysis
+from emotion_detection.config import LABELS_CSV, reference_call
+from emotion_detection.pipeline import analyse_file
+from emotion_detection.schema import CallAnalysis
 
 
 def test_malformed_file_returns_an_error_not_an_exception():

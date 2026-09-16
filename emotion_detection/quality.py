@@ -15,13 +15,13 @@ import librosa
 import numpy as np
 import torch
 
-from autoace.acoustics import (
+from emotion_detection.acoustics import (
     clip_percentage,
     frame_db,
     high_frequency_fraction,
     stft_magnitude,
 )
-from autoace.config import (
+from emotion_detection.config import (
     CLIP_FRACTION_THRESHOLD,
     DROPOUT_MIN_MS,
     ECHO_LAG_RANGE_MS,
@@ -32,8 +32,8 @@ from autoace.config import (
     SQUIM_STOI_SEVERE,
     SQUIM_STOI_SLIGHT,
 )
-from autoace.schema import AudioQuality
-from autoace.vad import Segment
+from emotion_detection.schema import AudioQuality
+from emotion_detection.vad import Segment
 
 _FLOOR_SENTINEL = -90.0
 _FRAME_HOP = SAMPLE_RATE // 100  # 10 ms, matching acoustics.stft_magnitude's hop

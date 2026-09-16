@@ -4,7 +4,7 @@
 # relax these three without re-testing the dashboard AND the ML stack together:
 #
 #   gradio >= 6.0   pulls huggingface-hub >= 1.0, which transformers 4.46
-#                   rejects (requires >=0.23.2,<1.0). Importing autoace.pipeline
+#                   rejects (requires >=0.23.2,<1.0). Importing emotion_detection.pipeline
 #                   then fails outright.
 #   gradio 4.44 /   work with the ML stack but return HTTP 500 on page load
 #   gradio 5.9      under pydantic >= 2.12 (TypeError in gradio_client.utils
@@ -27,7 +27,7 @@ opensmile>=2.5
 speechbrain>=1.0
 scikit-learn>=1.5
 silero-vad>=5.1
-openai>=1.50            # tone classifier (see autoace/config.py LLM_MODEL)
+openai>=1.50            # tone classifier (see emotion_detection/config.py LLM_MODEL)
 pydantic>=2.5,<2.12
 gradio==5.44.1
 pandas>=2.1

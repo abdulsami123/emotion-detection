@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from autoace.config import reference_call
-from autoace.io_audio import load_mono
-from autoace.prosody import (
+from emotion_detection.config import reference_call
+from emotion_detection.io_audio import load_mono
+from emotion_detection.prosody import (
     ActivationProfile,
     Tier,
     activation_profile,
@@ -14,7 +14,7 @@ from autoace.prosody import (
     select_tier,
     z_score,
 )
-from autoace.vad import Segment, speech_segments
+from emotion_detection.vad import Segment, speech_segments
 
 
 def test_tier_selection_from_customer_speech_duration():
@@ -92,7 +92,7 @@ def test_z_score_of_the_baseline_itself_is_near_zero():
 
 
 def test_combine_is_a_weighted_sum_using_config_weights():
-    from autoace.config import ACTIVATION_WEIGHTS
+    from emotion_detection.config import ACTIVATION_WEIGHTS
 
     score = combine({"loudness_range": 2.0})
     assert score == pytest.approx(2.0 * ACTIVATION_WEIGHTS["loudness_range"])
@@ -100,7 +100,7 @@ def test_combine_is_a_weighted_sum_using_config_weights():
 
 def test_combine_accepts_extra_non_vocal_channels():
     """Interactional and lexical channels arrive separately from eGeMAPS."""
-    from autoace.config import ACTIVATION_WEIGHTS
+    from emotion_detection.config import ACTIVATION_WEIGHTS
 
     score = combine({}, {"ser_arousal": 1.0})
     assert score == pytest.approx(ACTIVATION_WEIGHTS["ser_arousal"])

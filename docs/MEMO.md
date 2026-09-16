@@ -1,6 +1,6 @@
 # Technical Memo — Voice Tone & Background Noise
 
-**AutoAce AI technical trial.** Prepared 2026-08-17.
+**Emotion Detection AI technical trial.** Prepared 2026-08-17.
 
 ---
 
@@ -284,7 +284,7 @@ counter-example pinned.
 ## 7. Calibration position
 
 **Thresholds are derived from definitions and physics, then validated against three points — not
-fitted.** Every threshold lives in `autoace/config.py` and is annotated `MEASURED`, `DERIVED` or
+fitted.** Every threshold lives in `emotion_detection/config.py` and is annotated `MEASURED`, `DERIVED` or
 `UNFITTED`. Class coverage in the labelled set is severely incomplete:
 
 - `emotional_tone`: 3 of 5 classes (`frustrated`, `distressed` never appear as truth)
@@ -301,7 +301,7 @@ supporting example at all.
 so leakage risk is confined to prompt engineering against three examples. Mitigations: the three
 calls are a regression test rather than a tuning set; few-shot examples are **synthetic** rather
 than drawn from the labelled calls; and the ECAPA agent-reference mechanism uses speaker identity
-only and never reads `labels.csv`. No production module under `autoace/` reads the labels file.
+only and never reads `labels.csv`. No production module under `emotion_detection/` reads the labels file.
 
 **The three-call figures are therefore not an unbiased accuracy estimate**, and the confusion
 matrices are a formality at this n.
@@ -350,8 +350,8 @@ A 50-file batch runs at **~2.7 hours on the deployment hardware** (§9.2) —
 the earlier ~87-minute figure was an x86 dev-machine projection and is now
 superseded. No HTTP request survives that, and no evaluator should have to
 keep a browser tab open for it. The
-fix is a job queue: `autoace/jobs.py` (new, SQLite/WAL — schema, enqueue,
-exclusive claim, complete, fail, reconcile, expire) and `autoace/worker.py`
+fix is a job queue: `emotion_detection/jobs.py` (new, SQLite/WAL — schema, enqueue,
+exclusive claim, complete, fail, reconcile, expire) and `emotion_detection/worker.py`
 (new, the drain loop) run as two systemd units against one on-disk store.
 `app.py`'s `run_batch` splits into `enqueue_batch` (validate, insert rows,
 return a job ID immediately) and `poll_job` (read-only projection of the
@@ -633,9 +633,9 @@ deployment host rather than merely planned:
 | Per audio minute | **$0.00093** on a 0.5-min call, **$0.00025** on a 2.9-min call |
 | Upgrade candidate | `gpt-4.1-mini` at ~3× input cost; A/B pending a larger labelled set |
 | Retention | zero-retention / no-training to be confirmed on the account before production use |
-| **Does audio leave AutoAce infrastructure?** | **No.** Audio is never transmitted. |
+| **Does audio leave Emotion Detection infrastructure?** | **No.** Audio is never transmitted. |
 | What does leave? | The customer-side transcript, discretised prosody tags, the SER triple, and an agent-behaviour summary |
-| Fallback if egress is refused | `autoace/tone_nli.py` runs `bart-large-mnli` locally; no network at all |
+| Fallback if egress is refused | `emotion_detection/tone_nli.py` runs `bart-large-mnli` locally; no network at all |
 
 The signal branch makes no external calls whatsoever. Confidential audio and transcripts derived
 from it are excluded from version control (`reference/`, `tests/fixtures/asr_baseline.json`) because
